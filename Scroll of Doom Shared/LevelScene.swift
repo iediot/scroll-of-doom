@@ -1,58 +1,102 @@
 import SpriteKit
+import UIKit
 
-/// A minimal, single-screen playable level: a white cube trapped inside a
-/// white-bordered play box. Monochrome (white on black) aesthetic. Controls
-/// live in SwiftUI (see LevelPageView) and drive the cube through
-/// `setMove(_:)` and `jump()`.
 final class LevelScene: SKScene {
 
-    // MARK: - Tuning
     private let moveSpeed: CGFloat = 260
-    private let jumpSpeed: CGFloat = 750
-    private let maxJumps = 2
-
-    /// Play-box insets, in scene points.
-    private let boxSideInset: CGFloat = 16
-    private let boxBottomInset: CGFloat = 170   // a bit above the bottom UI
-    private let boxTopInset: CGFloat = 110       // clear of the notch / status area
+    private let jumpSpeed: CGFloat = 950
+    private let maxJumps = 1
+    private let gravityY: CGFloat = -30
+    private let edgeInset: CGFloat = 4
+    private let openingWidth: CGFloat = 46
+    // never 0.5 so a dropped cube lands on solid floor and cant chain-fall
+    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28]
 
     private enum Cat {
         static let player: UInt32 = 0x1 << 0
         static let ground: UInt32 = 0x1 << 1
+        static let heart:  UInt32 = 0x1 << 2
     }
 
-    // MARK: - Nodes / state
+    var levelIndex = 0
+    var onFellThrough: ((CGFloat) -> Void)?
+    var onCollectHeart: (() -> Void)?
+
     private var player: SKShapeNode!
-    private var boxBorder: SKShapeNode?
+    private var border: SKShapeNode?
+    private var heart: SKNode?
+    private var heartSlot: SKNode?
+    private var hatchNode: SKNode?
+    private var platformsNode: SKNode?
+    private var hatchCenter: CGPoint = .zero
+    private var hasKey = false
+    private var hatchUnlocked = false
+
     private var boxBottomY: CGFloat = 0
+    private var boxTopY: CGFloat = 0
+    private var boxMidX: CGFloat = 0
+    // needed by the corner constraint in didSimulatePhysics
+    private var cornerR: CGFloat = 0
 
     private var moveDirection: CGFloat = 0
-    private var jumpsRemaining = 2
+    private var jumpsRemaining = 1
+    private var hasFallenThrough = false
+    private var pendingEntryFrac: CGFloat?
+    private var lastLayoutSize: CGSize = .zero
 
-    // MARK: - Setup
+    private var openingFrac: CGFloat { openingFracs[levelIndex % openingFracs.count] }
+
+    // reads the real iphone display corner radius, falls back to a safe default
+    private var displayCornerRadius: CGFloat {
+        if let screen = view?.window?.windowScene?.screen,
+           let r = screen.value(forKey: "_displayCornerRadius") as? CGFloat, r > 0 {
+            return r
+        }
+        return 47
+    }
 
     override func didMove(to view: SKView) {
         scaleMode = .resizeFill
         backgroundColor = .black
-        physicsWorld.gravity = CGVector(dx: 0, dy: -18)
+        physicsWorld.gravity = CGVector(dx: 0, dy: gravityY)
         physicsWorld.contactDelegate = self
         buildLevel()
     }
 
+    // scenes are created at a placeholder size and get the real one later,
+    // the resize event can fire before didMove or while the page is offscreen
+    // and paused, so update also watches the size every frame as a backstop
     override func didChangeSize(_ oldSize: CGSize) {
         guard player != nil else { return }
+        relayout()
+        respawnCube()
+    }
+
+    private func relayout() {
         layoutBox()
+        heartSlot?.position = keyPosition
+        heart?.position = keyPosition
+        lastLayoutSize = size
+    }
+
+    // tune these two to line the key up with the rail slot
+    private let keyTopOffset: CGFloat = 515
+    private let keyRightInset: CGFloat = 35
+
+    private var keyPosition: CGPoint {
+        CGPoint(x: size.width - keyRightInset, y: size.height - keyTopOffset)
     }
 
     private func buildLevel() {
         removeAllChildren()
+        hasKey = false
+        hatchUnlocked = false
 
         let cube = CGSize(width: 30, height: 30)
         player = SKShapeNode(rectOf: cube, cornerRadius: 7)
         player.fillColor = .white
         player.strokeColor = .white
         player.lineWidth = 1.5
-        player.glowWidth = 0
         player.zPosition = 10
 
         let body = SKPhysicsBody(rectangleOf: CGSize(width: cube.width - 2, height: cube.height - 2))
@@ -61,12 +105,13 @@ final class LevelScene: SKScene {
         body.friction = 0
         body.linearDamping = 0
         body.categoryBitMask = Cat.player
-        body.contactTestBitMask = Cat.ground
+        body.contactTestBitMask = Cat.ground | Cat.heart
         body.collisionBitMask = Cat.ground
+        // sweeps movement path each frame so cube cant slip past the boundary
+        body.usesPreciseCollisionDetection = true
         player.physicsBody = body
         addChild(player)
 
-        // Eyes (kept black on the white cube).
         for ex in [-6.0, 6.0] {
             let eye = SKShapeNode(circleOfRadius: 3)
             eye.fillColor = .black
@@ -76,39 +121,211 @@ final class LevelScene: SKScene {
         }
 
         layoutBox()
-        // Drop the cube in from near the top of the box.
-        player.position = CGPoint(x: size.width / 2, y: boxBottomY + 160)
-        player.physicsBody?.velocity = .zero
+        addHeartSlot()
+        addHeartKey()
+        respawnCube()
+        lastLayoutSize = size
     }
 
-    /// (Re)builds the white play-box border + its containing physics edge loop
-    /// to fit the current scene size.
+    // unfilled heart at the exact spot of the key, pure ui so it stays after pickup
+    private func addHeartSlot() {
+        let slot = SKNode()
+        slot.zPosition = 7
+
+        let canvasSize = CGSize(width: 40, height: 70)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
+        let img = renderer.image { _ in
+            let cfg = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
+            if let sym = UIImage(systemName: "heart", withConfiguration: cfg)?
+                .withTintColor(.white, renderingMode: .alwaysOriginal) {
+                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 29 - sym.size.height/2,
+                                    width: sym.size.width, height: sym.size.height))
+            }
+        }
+
+        let sprite = SKSpriteNode(texture: SKTexture(image: img))
+        slot.addChild(sprite)
+        slot.zRotation = -.pi * 55 / 180
+        slot.position = keyPosition
+        addChild(slot)
+        heartSlot = slot
+    }
+
     private func layoutBox() {
-        boxBorder?.removeFromParent()
+        border?.removeFromParent()
 
-        let rect = CGRect(
-            x: boxSideInset,
-            y: boxBottomInset,
-            width: size.width - boxSideInset * 2,
-            height: size.height - boxTopInset - boxBottomInset
-        )
+        let rect = CGRect(x: edgeInset, y: edgeInset,
+                          width: size.width - edgeInset * 2,
+                          height: size.height - edgeInset * 2)
         boxBottomY = rect.minY
+        boxTopY = rect.maxY
+        boxMidX = rect.midX
 
-        let border = SKShapeNode(rect: rect, cornerRadius: 12)
-        border.strokeColor = .white
-        border.lineWidth = 3
-        border.fillColor = .clear
-        border.zPosition = 5
+        let minX = rect.minX, maxX = rect.maxX, minY = rect.minY, maxY = rect.maxY
 
-        let body = SKPhysicsBody(edgeLoopFrom: rect)   // traps the cube on all sides
-        body.categoryBitMask = Cat.ground
-        border.physicsBody = body
+        let openingCenterX = rect.minX + rect.width * openingFrac
+        let openingStartX = openingCenterX - openingWidth / 2
+        let openingEndX = openingCenterX + openingWidth / 2
 
-        addChild(border)
-        boxBorder = border
+        let cr = max(min(displayCornerRadius - edgeInset, rect.width / 2, rect.height / 2), 0)
+        cornerR = cr
+        let path = CGMutablePath()
+        let quarter = CGFloat.pi / 2
+
+        path.move(to: CGPoint(x: openingEndX, y: minY))
+        path.addLine(to: CGPoint(x: maxX - cr, y: minY))
+        path.addArc(center: CGPoint(x: maxX - cr, y: minY + cr), radius: cr,
+                    startAngle: -quarter, endAngle: 0, clockwise: false)
+        path.addLine(to: CGPoint(x: maxX, y: maxY - cr))
+        path.addArc(center: CGPoint(x: maxX - cr, y: maxY - cr), radius: cr,
+                    startAngle: 0, endAngle: quarter, clockwise: false)
+        path.addLine(to: CGPoint(x: minX + cr, y: maxY))
+        path.addArc(center: CGPoint(x: minX + cr, y: maxY - cr), radius: cr,
+                    startAngle: quarter, endAngle: .pi, clockwise: false)
+        path.addLine(to: CGPoint(x: minX, y: minY + cr))
+        path.addArc(center: CGPoint(x: minX + cr, y: minY + cr), radius: cr,
+                    startAngle: .pi, endAngle: .pi + quarter, clockwise: false)
+        path.addLine(to: CGPoint(x: openingStartX, y: minY))
+
+        let shape = SKShapeNode(path: path)
+        shape.strokeColor = .white
+        shape.lineWidth = 3
+        shape.lineCap = .round
+        shape.lineJoin = .round
+        shape.fillColor = .clear
+        shape.zPosition = 5
+
+        let edge = SKPhysicsBody(edgeChainFrom: path)
+        edge.categoryBitMask = Cat.ground
+        shape.physicsBody = edge
+
+        addChild(shape)
+        border = shape
+
+        buildHatch(startX: openingStartX, endX: openingEndX, y: minY)
+        buildPlatforms()
     }
 
-    // MARK: - Public control API (called from the SwiftUI overlay)
+    // gray barrier sealing the hole, opens only when the key is brought close
+    private func buildHatch(startX: CGFloat, endX: CGFloat, y: CGFloat) {
+        hatchNode?.removeFromParent()
+        hatchNode = nil
+        hatchCenter = CGPoint(x: (startX + endX) / 2, y: y)
+        guard !hatchUnlocked else { return }
+
+        let gray = UIColor(white: 0.45, alpha: 1)
+        let hatch = SKNode()
+        hatch.zPosition = 6
+
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: startX, y: y))
+        path.addLine(to: CGPoint(x: endX, y: y))
+        let line = SKShapeNode(path: path)
+        line.strokeColor = gray
+        line.lineWidth = 3
+        line.lineCap = .round
+        hatch.addChild(line)
+
+        let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
+        if let sym = UIImage(systemName: "lock.fill", withConfiguration: cfg)?
+            .withTintColor(gray, renderingMode: .alwaysOriginal) {
+            let renderer = UIGraphicsImageRenderer(size: sym.size)
+            let flat = renderer.image { _ in sym.draw(at: .zero) }
+            let lock = SKSpriteNode(texture: SKTexture(image: flat))
+            lock.position = CGPoint(x: hatchCenter.x, y: y + 14)
+            hatch.addChild(lock)
+        }
+
+        let body = SKPhysicsBody(edgeFrom: CGPoint(x: startX, y: y),
+                                 to: CGPoint(x: endX, y: y))
+        body.categoryBitMask = Cat.ground
+        hatch.physicsBody = body
+
+        addChild(hatch)
+        hatchNode = hatch
+    }
+
+    // zigzag of platforms up the right side spaced under the jump height, for debugging
+    private func buildPlatforms() {
+        platformsNode?.removeFromParent()
+
+        let node = SKNode()
+        node.zPosition = 5
+
+        let keyY = keyPosition.y
+        let width: CGFloat = 70
+        var y = boxBottomY + 85
+        var i = 0
+        while y < keyY - 35 {
+            let cx = i % 2 == 0 ? size.width - 75 : size.width - 185
+            let a = CGPoint(x: cx - width / 2, y: y)
+            let b = CGPoint(x: cx + width / 2, y: y)
+            let path = CGMutablePath()
+            path.move(to: a)
+            path.addLine(to: b)
+            let line = SKShapeNode(path: path)
+            line.strokeColor = .white
+            line.lineWidth = 3
+            line.lineCap = .round
+            let body = SKPhysicsBody(edgeFrom: a, to: b)
+            body.categoryBitMask = Cat.ground
+            line.physicsBody = body
+            node.addChild(line)
+            y += 85
+            i += 1
+        }
+
+        addChild(node)
+        platformsNode = node
+    }
+
+    private func addHeartKey() {
+        heart?.removeFromParent()
+
+        let key = SKNode()
+        key.zPosition = 8
+
+        let canvasSize = CGSize(width: 40, height: 70)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
+        let img = renderer.image { _ in
+            UIColor.white.setFill()
+            let cfg = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
+            if let sym = UIImage(systemName: "heart.fill", withConfiguration: cfg)?
+                .withTintColor(.white, renderingMode: .alwaysOriginal) {
+                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 29 - sym.size.height/2,
+                                    width: sym.size.width, height: sym.size.height))
+            }
+            UIBezierPath(roundedRect: CGRect(x: 17.5, y: 29, width: 5, height: 30), cornerRadius: 2.5).fill()
+            UIBezierPath(roundedRect: CGRect(x: 22, y: 53, width: 7, height: 4), cornerRadius: 1).fill()
+            UIBezierPath(roundedRect: CGRect(x: 22, y: 45, width: 5, height: 4), cornerRadius: 1).fill()
+        }
+
+        let sprite = SKSpriteNode(texture: SKTexture(image: img))
+        key.addChild(sprite)
+        key.zRotation = -.pi * 55 / 180
+        key.position = keyPosition
+
+        let body = SKPhysicsBody(circleOfRadius: 20)
+        body.isDynamic = false
+        body.categoryBitMask = Cat.heart
+        body.collisionBitMask = 0
+        key.physicsBody = body
+
+        addChild(key)
+        heart = key
+    }
+
+    private func respawnCube() {
+        let x = pendingEntryFrac.map { $0 * size.width } ?? boxMidX
+        pendingEntryFrac = nil
+        player.position = CGPoint(x: x, y: boxTopY - 40)
+        player.physicsBody?.velocity = .zero
+        hasFallenThrough = false
+    }
 
     func setMove(_ direction: CGFloat) { moveDirection = direction }
 
@@ -119,28 +336,140 @@ final class LevelScene: SKScene {
         jumpsRemaining -= 1
     }
 
-    // MARK: - Loop
+    func enterFromTop(atXFraction frac: CGFloat) {
+        pendingEntryFrac = frac
+        if boxTopY > 0 { respawnCube() }
+    }
 
     override func update(_ currentTime: TimeInterval) {
         guard let body = player?.physicsBody else { return }
-        body.velocity.dx = moveDirection * moveSpeed
 
-        if player.position.y < boxBottomY - 80 {     // safety respawn
-            player.position = CGPoint(x: size.width / 2, y: boxBottomY + 160)
-            body.velocity = .zero
+        // catches any resize the events missed before a wrong frame can show
+        if size != lastLayoutSize {
+            relayout()
+            respawnCube()
+        }
+
+        // look one frame ahead, cap velocity so the cube arrives flush at the wall
+        // instead of penetrating and getting pushed back, which was the jitter
+        let dt: CGFloat = 1.0 / 60.0
+        let halfW: CGFloat = 14
+        let wallMin = edgeInset + halfW
+        let wallMax = size.width - edgeInset - halfW
+        var vx = moveDirection * moveSpeed
+        let predictedX = player.position.x + vx * dt
+        if predictedX > wallMax {
+            vx = max(0, (wallMax - player.position.x) / dt)
+        } else if predictedX < wallMin {
+            vx = min(0, (wallMin - player.position.x) / dt)
+        }
+        body.velocity.dx = vx
+
+        // raycast under both bottom corners, grounding via contact events wont
+        // work because the border is one body so wall contact keeps it alive
+        if body.velocity.dy <= 1 {
+            var grounded = false
+            for ox in [-halfW + 1, halfW - 1] {
+                let start = CGPoint(x: player.position.x + ox, y: player.position.y)
+                let end = CGPoint(x: start.x, y: start.y - halfW - 5)
+                physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
+                    if hit.categoryBitMask == Cat.ground {
+                        grounded = true
+                        stop.pointee = true
+                    }
+                }
+                if grounded { break }
+            }
+            if grounded { jumpsRemaining = maxJumps }
+        }
+
+        // carrying the key close to the hatch unlocks it
+        if hasKey, !hatchUnlocked, let hatch = hatchNode {
+            let dx = player.position.x - hatchCenter.x
+            let dy = player.position.y - hatchCenter.y
+            if dx * dx + dy * dy < 70 * 70 {
+                hatchUnlocked = true
+                hatch.physicsBody = nil
+                hatch.run(.sequence([.fadeOut(withDuration: 0.25), .removeFromParent()]))
+                hatchNode = nil
+            }
+        }
+
+        if !hasFallenThrough, player.position.y < boxBottomY - 30 {
+            hasFallenThrough = true
+            onFellThrough?(player.position.x / size.width)
+        }
+        if player.position.y < boxBottomY - 140 {
+            respawnCube()
+        }
+    }
+
+    // runs after the physics step so whatever we set here is what renders,
+    // enforcing wall and arc constraints before any frame is drawn
+    override func didSimulatePhysics() {
+        guard let body = player?.physicsBody, !hasFallenThrough else { return }
+        let halfW: CGFloat = 14
+        let wallMin = edgeInset + halfW
+        let wallMax = size.width - edgeInset - halfW
+        if player.position.x < wallMin {
+            player.position.x = wallMin
+            if body.velocity.dx < 0 { body.velocity.dx = 0 }
+        } else if player.position.x > wallMax {
+            player.position.x = wallMax
+            if body.velocity.dx > 0 { body.velocity.dx = 0 }
+        }
+
+        let arcTopY = boxBottomY + cornerR
+        if player.position.y - halfW < arcTopY {
+            constrainToCorner(center: CGPoint(x: size.width - edgeInset - cornerR, y: arcTopY),
+                              cubeCorner: CGPoint(x: player.position.x + halfW,
+                                                  y: player.position.y - halfW),
+                              rightSide: true, body: body)
+            constrainToCorner(center: CGPoint(x: edgeInset + cornerR, y: arcTopY),
+                              cubeCorner: CGPoint(x: player.position.x - halfW,
+                                                  y: player.position.y - halfW),
+                              rightSide: false, body: body)
+        }
+    }
+
+    // projects the cube back onto the arc and cancels only the outward velocity
+    private func constrainToCorner(center: CGPoint, cubeCorner q: CGPoint,
+                                   rightSide: Bool, body: SKPhysicsBody) {
+        guard q.y < center.y, rightSide ? q.x > center.x : q.x < center.x else { return }
+        let dx = q.x - center.x, dy = q.y - center.y
+        let dist = sqrt(dx * dx + dy * dy)
+        guard dist > cornerR, dist > 0 else { return }
+
+        let scale = cornerR / dist
+        player.position.x += (center.x + dx * scale) - q.x
+        player.position.y += (center.y + dy * scale) - q.y
+
+        let nx = dx / dist, ny = dy / dist
+        let vOut = body.velocity.dx * nx + body.velocity.dy * ny
+        if vOut > 0 {
+            body.velocity.dx -= vOut * nx
+            body.velocity.dy -= vOut * ny
         }
     }
 }
 
 extension LevelScene: SKPhysicsContactDelegate {
     func didBegin(_ contact: SKPhysicsContact) {
-        let onGround = contact.bodyA.categoryBitMask == Cat.ground
-            || contact.bodyB.categoryBitMask == Cat.ground
-        // Reset jumps only when landing near the box floor (not walls/ceiling).
-        if onGround,
-           abs(contact.contactNormal.dy) > 0.5,
-           player.position.y < boxBottomY + 70 {
-            jumpsRemaining = maxJumps
+        let other = contact.bodyA.categoryBitMask == Cat.player ? contact.bodyB : contact.bodyA
+
+        switch other.categoryBitMask {
+        case Cat.heart:
+            if let node = other.node, node == heart {
+                heart = nil
+                hasKey = true
+                onCollectHeart?()
+                node.run(.sequence([
+                    .group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),
+                    .removeFromParent()
+                ]))
+            }
+        default:
+            break
         }
     }
 }

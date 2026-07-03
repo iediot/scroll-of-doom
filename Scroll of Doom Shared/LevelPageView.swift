@@ -2,62 +2,52 @@
 import SwiftUI
 import SpriteKit
 
-/// A single page in the feed — a full-screen playable level with TikTok-style
-/// chrome: caption bottom-left, engagement rail on the right (raised toward
-/// mid-screen), and triangle movement/jump controls along the bottom.
 struct LevelPageView: View {
     let levelIndex: Int
-    @Binding var scrollLocked: Bool
+    let scene: LevelScene
+    // input goes through feedview so a held press carries across level transitions
+    let onMove: (CGFloat) -> Void
+    let onJump: () -> Void
 
-    /// The level's SpriteKit scene, kept stable across body re-evaluations.
-    @State private var scene = LevelScene(size: CGSize(width: 400, height: 800))
+    @State private var keyCollected = false
 
-    /// Number of controls currently held. Feed paging is locked while > 0.
-    @State private var activeControls = 0
+    private let gap: CGFloat = 28
+    private let controlSide: CGFloat = 64
+    private let usernameBottom: CGFloat = 30
+    private let usernameHeight: CGFloat = 46
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color(red: 0.05, green: 0.06, blue: 0.12)
+            Color.black
             SpriteView(scene: scene, options: [.ignoresSiblingOrder])
             engagementRail
-            caption
             controls
+            caption
         }
         .ignoresSafeArea()
+        .onAppear {
+            scene.onCollectHeart = { keyCollected = true }
+        }
     }
-
-    // MARK: - Scroll lock (multi-touch safe)
-
-    private func controlPressChanged(_ pressing: Bool) {
-        activeControls = max(0, activeControls + (pressing ? 1 : -1))
-        scrollLocked = activeControls > 0
-    }
-
-    // MARK: - Controls (triangles along the bottom)
 
     private var controls: some View {
         HStack(alignment: .bottom) {
             HStack(spacing: 18) {
-                ControlTriangle(direction: .left) { pressing in
-                    scene.setMove(pressing ? -1 : 0)
-                    controlPressChanged(pressing)
+                ControlTriangle(direction: .left, side: controlSide) { pressing in
+                    onMove(pressing ? -1 : 0)
                 }
-                ControlTriangle(direction: .right) { pressing in
-                    scene.setMove(pressing ? 1 : 0)
-                    controlPressChanged(pressing)
+                ControlTriangle(direction: .right, side: controlSide) { pressing in
+                    onMove(pressing ? 1 : 0)
                 }
             }
             Spacer()
-            ControlTriangle(direction: .up) { pressing in
-                if pressing { scene.jump() }
-                controlPressChanged(pressing)
+            ControlTriangle(direction: .up, side: controlSide) { pressing in
+                if pressing { onJump() }
             }
         }
         .padding(.horizontal, 26)
-        .padding(.bottom, 88)   // raised, sits above the username
+        .padding(.bottom, usernameBottom + usernameHeight + gap)
     }
-
-    // MARK: - Caption (bottom-left)
 
     private var caption: some View {
         VStack {
@@ -74,24 +64,22 @@ struct LevelPageView: View {
                 .shadow(color: .black.opacity(0.5), radius: 4)
                 Spacer()
             }
-            .padding(.leading, 16)
-            .padding(.bottom, 26)    // below the arrows, at the very bottom
+            .padding(.leading, 30)
+            .padding(.bottom, usernameBottom)
         }
     }
-
-    // MARK: - Engagement rail (right side, raised like TikTok)
 
     private var engagementRail: some View {
         VStack(spacing: 0) {
             Spacer()
             VStack(spacing: 22) {
-                profileAvatar
-                EngagementButton(icon: "heart.fill",   label: likeCount,    tint: .white)
+                profileAvatar.padding(.bottom, 35)
+                Text(likeCount).font(.footnote).bold()
                 EngagementButton(icon: "bubble.right.fill", label: commentCount, tint: .white)
                 EngagementButton(icon: "arrowshape.turn.up.right.fill", label: shareCount, tint: .white)
             }
             .padding(.trailing, 12)
-            .padding(.bottom, 230)   // lifts rail clear of the controls
+            .padding(.bottom, 230)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -104,7 +92,12 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    private var likeCount: String    { formatCount(1200 + levelIndex * 337) }
+    // collecting the key takes a like with it, kept under 1k so the -1 is visible
+    private static let likeSeeds = [903, 617, 842, 476, 758]
+    private var likeCount: String {
+        let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
+        return formatCount(seed - (keyCollected ? 1 : 0))
+    }
     private var commentCount: String { formatCount(84 + levelIndex * 53) }
     private var shareCount: String   { formatCount(12 + levelIndex * 9) }
 
@@ -117,19 +110,14 @@ struct LevelPageView: View {
     }
 }
 
-// MARK: - Triangle control
-
-/// A triangular button that reports press/release. The triangle itself is the
-/// hit area (no surrounding circle), and its own gesture wins over the feed's
-/// scroll so touches here drive the game rather than paging.
 private struct ControlTriangle: View {
     enum Direction { case left, right, up }
 
     let direction: Direction
+    let side: CGFloat
     let onPress: (Bool) -> Void
 
     @State private var pressed = false
-    private let sideLength: CGFloat = 66
 
     private var rotation: Angle {
         switch direction {
@@ -140,37 +128,90 @@ private struct ControlTriangle: View {
     }
 
     var body: some View {
-        let shape = TriangleShape().rotation(rotation)
-        return shape
-            .fill(.white.opacity(pressed ? 0.9 : 0.5))
-            .frame(width: sideLength, height: sideLength)
+        RoundedTriangle(cornerRadius: 12)
+            .fill(.white.opacity(pressed ? 0.75 : 1.0))
+            .frame(width: side, height: side)
             .shadow(color: .black.opacity(0.35), radius: 3)
-            .contentShape(shape)   // hit area = the triangle only
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        if !pressed { pressed = true; onPress(true) }
-                    }
-                    .onEnded { _ in
-                        pressed = false; onPress(false)
-                    }
+            .rotationEffect(rotation)
+            .overlay(
+                // uikit touches instead of swiftui gestures, swiftui is single-touch
+                // and adds lag, raw touches make every button independent and instant
+                TouchCatcher { down in
+                    pressed = down
+                    onPress(down)
+                }
             )
     }
 }
 
-/// An upward-pointing triangle filling its rect; rotate for other directions.
-private struct TriangleShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        p.closeSubpath()
-        return p
+private struct TouchCatcher: UIViewRepresentable {
+    let onPress: (Bool) -> Void
+
+    func makeUIView(context: Context) -> TouchCatcherView {
+        let v = TouchCatcherView()
+        v.backgroundColor = .clear
+        v.onPress = onPress
+        return v
+    }
+
+    func updateUIView(_ uiView: TouchCatcherView, context: Context) {
+        uiView.onPress = onPress
     }
 }
 
-// MARK: - Engagement button
+private final class TouchCatcherView: UIView {
+    var onPress: ((Bool) -> Void)?
+    private var activeTouches = 0
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if activeTouches == 0 { onPress?(true) }
+        activeTouches += touches.count
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        activeTouches = max(0, activeTouches - touches.count)
+        if activeTouches == 0 { onPress?(false) }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        activeTouches = max(0, activeTouches - touches.count)
+        if activeTouches == 0 { onPress?(false) }
+    }
+}
+
+private struct RoundedTriangle: Shape {
+    var cornerRadius: CGFloat = 10
+
+    func path(in rect: CGRect) -> Path {
+        let w = min(rect.width, rect.height)
+        let h = w * sqrt(3) / 2
+        let top         = CGPoint(x: rect.midX,       y: rect.midY - h / 2)
+        let bottomRight = CGPoint(x: rect.midX + w/2, y: rect.midY + h / 2)
+        let bottomLeft  = CGPoint(x: rect.midX - w/2, y: rect.midY + h / 2)
+        let pts = [top, bottomRight, bottomLeft]
+
+        var path = Path()
+        for i in 0..<3 {
+            let curr = pts[i]
+            let prev = pts[(i + 2) % 3]
+            let next = pts[(i + 1) % 3]
+            let toPrev = unit(from: curr, to: prev)
+            let toNext = unit(from: curr, to: next)
+            let start = CGPoint(x: curr.x + toPrev.x * cornerRadius, y: curr.y + toPrev.y * cornerRadius)
+            let end   = CGPoint(x: curr.x + toNext.x * cornerRadius, y: curr.y + toNext.y * cornerRadius)
+            if i == 0 { path.move(to: start) } else { path.addLine(to: start) }
+            path.addQuadCurve(to: end, control: curr)
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func unit(from a: CGPoint, to b: CGPoint) -> CGPoint {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = max(hypot(dx, dy), 0.0001)
+        return CGPoint(x: dx / len, y: dy / len)
+    }
+}
 
 private struct EngagementButton: View {
     let icon: String
