@@ -1,18 +1,4 @@
-//
-//  GameScene.swift
-//  Shared SpriteKit scene for iOS + macOS
-//
-//  Infinite vertical tower climber:
-//  - Endless procedural platforms, difficulty scales with height
-//  - Spikes and falling = death -> game over screen -> tap/space to restart
-//  - Run timer, height meter, coin counter
-//  - Parallax starfield, glowing coins, rounded shapes
-//  - iOS: joystick + jump button | macOS: arrows/WASD + space
-//
-
 import SpriteKit
-
-// MARK: - Physics categories
 
 struct PhysicsCategory {
     static let none:   UInt32 = 0
@@ -24,29 +10,25 @@ struct PhysicsCategory {
 
 class GameScene: SKScene {
 
-    // MARK: - Tuning knobs
-
     private let moveSpeed: CGFloat = 260
-    private let jumpSpeed: CGFloat = 750          // pts/s upward (tested & approved)
-    private let gravityMS2: CGFloat = -18         // m/s^2
+    private let jumpSpeed: CGFloat = 750
+    private let gravityMS2: CGFloat = -18
     private let maxJumps = 2
     private let cameraSmoothing: CGFloat = 4.5
-    private let playerSize = CGSize(width: 24, height: 24)   // smaller cube
+    private let playerSize = CGSize(width: 24, height: 24)
 
-    // Difficulty scaling with height h (in points above spawn):
+    // difficulty scales with height above spawn
     private func platformWidth(atHeight h: CGFloat) -> ClosedRange<CGFloat> {
-        let shrink = min(h / 60, 55)                    // narrows as you climb
-        return (75 - shrink * 0.4)...(125 - shrink)     // ~75-125 early, ~53-70 high up
+        let shrink = min(h / 60, 55)
+        return (75 - shrink * 0.4)...(125 - shrink)     // 75-125 early, 53-70 high up
     }
     private func verticalGap(atHeight h: CGFloat) -> ClosedRange<CGFloat> {
         let grow = min(h / 80, 30)
-        return (88 + grow * 0.5)...(100 + grow)         // 88-100 early, ~103-130 high up
+        return (88 + grow * 0.5)...(100 + grow)         // 88-100 early, 103-130 high up
     }
     private func spikeChance(atHeight h: CGFloat) -> Double {
-        min(0.05 + Double(h) / 6000.0, 0.35)            // up to 35% of platforms
+        min(0.05 + Double(h) / 6000.0, 0.35)            // caps at 35 percent of platforms
     }
-
-    // MARK: - Nodes & state
 
     private var player: SKShapeNode!
     private var gameCamera: SKCameraNode!
@@ -69,12 +51,10 @@ class GameScene: SKScene {
 
     private var highestGeneratedY: CGFloat = 0
     private var nextPlatformLeft = true
-    private var worldNode: SKNode!                 // holds platforms/coins/spikes for easy cleanup
+    private var worldNode: SKNode!
 
-    #if os(iOS) || os(tvOS)
     private var joystickTouch: UITouch?
     private var jumpTouch: UITouch?
-    #endif
 
     private var score = 0 {
         didSet { coinLabel?.text = "● \(score)" }
@@ -83,16 +63,12 @@ class GameScene: SKScene {
     private var spawnPoint = CGPoint.zero
     private var bestHeight = 0
 
-    // MARK: - Scene setup
-
     override func didMove(to view: SKView) {
         backgroundColor = SKColor(red: 0.05, green: 0.06, blue: 0.12, alpha: 1)
         physicsWorld.gravity = CGVector(dx: 0, dy: gravityMS2)
         physicsWorld.contactDelegate = self
 
-        #if os(iOS) || os(tvOS)
         view.isMultipleTouchEnabled = true
-        #endif
 
         spawnPoint = CGPoint(x: size.width / 2, y: 120)
 
@@ -100,17 +76,10 @@ class GameScene: SKScene {
         setupStars()
         setupWalls()
         setupHUD()
-
-        #if os(iOS) || os(tvOS)
         setupTouchControls()
-        #elseif os(macOS)
-        view.window?.makeFirstResponder(self)
-        #endif
 
         startRun()
     }
-
-    // MARK: - Run lifecycle
 
     private func startRun() {
         isGameOver = false
@@ -120,14 +89,12 @@ class GameScene: SKScene {
         runStartTime = 0            // set on first update tick of the run
         elapsedTime = 0
 
-        // Clear old world + game over UI
         worldNode?.removeFromParent()
         gameCamera.childNode(withName: "gameOverPanel")?.removeFromParent()
 
         worldNode = SKNode()
         addChild(worldNode)
 
-        // Starting floor
         let floor = roundedBlock(size: CGSize(width: size.width - 60, height: 24),
                                  color: SKColor(red: 0.30, green: 0.33, blue: 0.42, alpha: 1))
         floor.position = CGPoint(x: size.width / 2, y: 80)
@@ -138,14 +105,11 @@ class GameScene: SKScene {
         highestGeneratedY = 80
         nextPlatformLeft = true
 
-        // Player
         player?.removeFromParent()
         setupPlayer()
 
-        // Camera snap to start
         gameCamera.position = CGPoint(x: size.width / 2, y: spawnPoint.y + size.height * 0.2)
 
-        // Pre-generate the first screenful
         generatePlatforms(upTo: size.height * 1.5)
     }
 
@@ -158,7 +122,6 @@ class GameScene: SKScene {
         let meters = Int(max(0, player.position.y - spawnPoint.y) / 10)
         bestHeight = max(bestHeight, meters)
 
-        // Red flash
         let flash = SKSpriteNode(color: .systemRed, size: size)
         flash.zPosition = 150
         flash.alpha = 0.0
@@ -169,7 +132,6 @@ class GameScene: SKScene {
             .removeFromParent()
         ]))
 
-        // Panel
         let panel = SKNode()
         panel.name = "gameOverPanel"
         panel.zPosition = 200
@@ -216,8 +178,6 @@ class GameScene: SKScene {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    // MARK: - Player
-
     private func setupPlayer() {
         player = SKShapeNode(rectOf: playerSize, cornerRadius: 6)
         player.fillColor = .systemTeal
@@ -226,7 +186,6 @@ class GameScene: SKScene {
         player.glowWidth = 2
         player.position = spawnPoint
 
-        // Little eyes for character
         for ex in [-5.0, 5.0] {
             let eye = SKShapeNode(circleOfRadius: 2.5)
             eye.fillColor = SKColor(white: 0.1, alpha: 1)
@@ -248,8 +207,6 @@ class GameScene: SKScene {
         player.zPosition = 10
         addChild(player)
     }
-
-    // MARK: - Infinite generation
 
     private func generatePlatforms(upTo targetY: CGFloat) {
         var rng = SystemRandomNumberGenerator()
@@ -277,7 +234,7 @@ class GameScene: SKScene {
             nextPlatformLeft.toggle()
         }
 
-        // Cull anything far below the camera
+        // cull far below the camera
         let cullY = gameCamera.position.y - size.height
         for node in worldNode.children where node.position.y < cullY {
             node.removeFromParent()
@@ -294,7 +251,7 @@ class GameScene: SKScene {
         worldNode.addChild(platform)
 
         if withSpikes {
-            // Spikes cover one random half of the platform; the other half stays safe
+            // spikes cover one random half, the other half stays safe
             let spikeWidth = width * 0.5
             let offset = (Bool.random(using: &rng) ? 1 : -1) * width * 0.25
             addSpikes(x: x + offset, y: y + 7, width: spikeWidth)
@@ -369,8 +326,6 @@ class GameScene: SKScene {
         return body
     }
 
-    // MARK: - Walls, stars, camera, HUD
-
     private func setupWalls() {
         let wallColor = SKColor(red: 0.16, green: 0.18, blue: 0.26, alpha: 1)
         let wallSize = CGSize(width: 20, height: size.height * 2.5)
@@ -412,8 +367,8 @@ class GameScene: SKScene {
     }
 
     private func updateStars() {
-        // Parallax: layers track the camera at a fraction of its speed,
-        // and stars wrap vertically so the field is endless.
+        // parallax layers track the camera at a fraction of its speed, stars
+        // wrap vertically so the field is endless
         let camY = gameCamera.position.y
         starLayerFar.position.y = camY * 0.85 - size.height * 0.4
         starLayerNear.position.y = camY * 0.7 - size.height * 0.3
@@ -466,8 +421,6 @@ class GameScene: SKScene {
         gameCamera.addChild(timeLabel)
     }
 
-    // MARK: - Jumping
-
     private func pressJump() {
         guard !isGameOver, jumpsRemaining > 0 else { return }
         if let body = player.physicsBody {
@@ -476,8 +429,6 @@ class GameScene: SKScene {
         }
         jumpsRemaining -= 1
     }
-
-    // MARK: - Frame update
 
     override func update(_ time: TimeInterval) {
         let dt: CGFloat
@@ -490,25 +441,21 @@ class GameScene: SKScene {
 
         guard !isGameOver, let body = player.physicsBody else { return }
 
-        // Run timer
         if runStartTime == 0 { runStartTime = time }
         elapsedTime = time - runStartTime
         timeLabel.text = formatTime(elapsedTime)
 
-        // Horizontal movement
         body.velocity.dx = moveDirection * moveSpeed
 
-        // Fell below the visible area -> death
         if player.position.y < gameCamera.position.y - size.height / 2 - 60 {
             gameOver(reason: "YOU FELL!")
             return
         }
 
-        // Height meter
         let meters = Int(max(0, player.position.y - spawnPoint.y) / 10)
         heightLabel.text = "\(meters) m"
 
-        // Camera follows upward (never scrolls back down past a bit below the player)
+        // camera only follows upward, never scrolls back down
         let targetY = player.position.y + size.height * 0.12
         let t = 1 - exp(-cameraSmoothing * dt)
         var newY = gameCamera.position.y + (targetY - gameCamera.position.y) * t
@@ -516,18 +463,15 @@ class GameScene: SKScene {
         gameCamera.position.y = newY
         gameCamera.position.x = size.width / 2
 
-        // Walls follow the camera so the tower is endless
+        // walls follow the camera so the tower is endless
         leftWall.position.y = newY
         rightWall.position.y = newY
 
         updateStars()
 
-        // Keep generating ahead of the camera
         generatePlatforms(upTo: newY + size.height * 1.2)
     }
 }
-
-// MARK: - Contacts
 
 extension GameScene: SKPhysicsContactDelegate {
 
@@ -561,8 +505,6 @@ extension GameScene: SKPhysicsContactDelegate {
     }
 }
 
-// MARK: - Shared restart handling
-
 extension GameScene {
     fileprivate func handleRestartInput() -> Bool {
         if isGameOver {
@@ -573,9 +515,6 @@ extension GameScene {
     }
 }
 
-// MARK: - iOS: Virtual joystick + jump button
-
-#if os(iOS) || os(tvOS)
 import UIKit
 
 extension GameScene {
@@ -687,59 +626,12 @@ extension GameScene {
     }
 }
 
-// MARK: - macOS: Keyboard
-
-#elseif os(macOS)
-import AppKit
-
-extension GameScene {
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func keyDown(with event: NSEvent) {
-        guard !event.isARepeat else { return }
-
-        if isGameOver {
-            _ = handleRestartInput()
-            return
-        }
-
-        switch event.keyCode {
-        case 123, 0:  moveDirection = -1   // Left arrow, A
-        case 124, 2:  moveDirection = 1    // Right arrow, D
-        case 49, 126, 13: pressJump()      // Space, Up arrow, W
-        default: break
-        }
-    }
-
-    override func keyUp(with event: NSEvent) {
-        switch event.keyCode {
-        case 123, 0:
-            if moveDirection < 0 { moveDirection = 0 }
-        case 124, 2:
-            if moveDirection > 0 { moveDirection = 0 }
-        default: break
-        }
-    }
-}
-#endif
-
-// MARK: - Small helpers
-
 private extension SKColor {
-    /// Linear mix between two colors (cross-platform, no NSColor name clash).
     func mixed(with color: SKColor, fraction: CGFloat) -> SKColor {
         var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
         var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
-        #if os(macOS)
-        let c1 = usingColorSpace(.deviceRGB) ?? self
-        let c2 = color.usingColorSpace(.deviceRGB) ?? color
-        c1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
-        c2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        #else
         getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
         color.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        #endif
         return SKColor(red: r1 + (r2 - r1) * fraction,
                        green: g1 + (g2 - g1) * fraction,
                        blue: b1 + (b2 - b1) * fraction,

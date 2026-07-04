@@ -4,6 +4,8 @@ import SpriteKit
 
 struct LevelPageView: View {
     let levelIndex: Int
+    // ads and future boss levels dont count toward the shown level number
+    let displayLevel: Int
     let isAd: Bool
     let scene: LevelScene
     // input goes through feedview so a held press carries across level transitions
@@ -52,16 +54,54 @@ struct LevelPageView: View {
         .padding(.bottom, usernameBottom + usernameHeight + gap)
     }
 
+    private static let usernamePatterns = [
+        "@user.level%d", "@lvl%d_real", "@its.level.%d", "@level%dofficial",
+        "@justlevel%dthings", "@level%d_clips", "@level%d.fyp",
+        "@level%dfanpage", "@lvl%d.official", "@level%d_leaks",
+        "@level%dposting", "@lvl.%d.daily", "@level%d.core", "@levels.w.%d"
+    ]
+
+    private static let blurbPatterns = [
+        "ts level pmo sm icl 🌹",
+        "day 2 of posting my level until someone beats it",
+        "no caption needed.",
+        "We explored this abandoned level. What we found was unsettling.",
+        "🧱",
+        "BREAKING: local level declared structurally unsound, residents advised to jump.",
+        "this one lowk goes hard ngl 🔥",
+        "",
+        "my honest reaction 💀",
+        "POV: the gate wont open",
+        "speedrun attempt, any% (gone wrong)",
+        "how it feels to finally leave this place",
+        "Level %d tour, part 3. The walls are still white.",
+        "Season finale. Everything ends here."
+    ]
+
+    private var username: String {
+        if isAd { return "@wingscorp.official" }
+        let pattern = Self.usernamePatterns[(displayLevel - 1) % Self.usernamePatterns.count]
+        return String(format: pattern, displayLevel)
+    }
+
+    private var blurb: String {
+        if isAd { return "Wings™ — fly through levels. Get yours today 🪽" }
+        let pattern = Self.blurbPatterns[(displayLevel - 1) % Self.blurbPatterns.count]
+        return String(format: pattern, displayLevel)
+    }
+
     private var caption: some View {
         VStack {
             Spacer()
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(isAd ? "@your_ad_here" : "@level_\(levelIndex + 1)")
+                    Text(username)
                         .font(.headline).bold()
-                    Text(isAd ? "Get wings today" : "Level \(levelIndex + 1)")
-                        .font(.subheadline)
-                        .opacity(0.9)
+                    if !blurb.isEmpty {
+                        Text(blurb)
+                            .font(.subheadline)
+                            .opacity(0.9)
+                    }
                     if isAd {
                         Text("Sponsored")
                             .font(.caption).bold()
@@ -103,7 +143,8 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689, 289]
+    private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689, 289,
+                                    724, 448, 866, 592, 337, 781, 653]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
         return formatCount(seed - (keyCollected ? 1 : 0) + (heartFilled ? 1 : 0))

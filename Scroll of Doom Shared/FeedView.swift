@@ -3,7 +3,7 @@ import SwiftUI
 
 struct FeedView: View {
 
-    private static let levelCount = 8
+    private static let levelCount = 15
     private static let adLevels: Set<Int> = [7]
 
     // scenes stay nil until play is pressed, by then the real screen size is
@@ -57,6 +57,7 @@ struct FeedView: View {
             LazyVStack(spacing: 0) {
                 ForEach(0..<Self.levelCount, id: \.self) { index in
                     LevelPageView(levelIndex: index,
+                                  displayLevel: Self.displayLevel(for: index),
                                   isAd: Self.adLevels.contains(index),
                                   scene: scenes[index],
                                   onMove: { dir in
@@ -77,6 +78,11 @@ struct FeedView: View {
         .scrollDisabled(true)
         .scrollIndicators(.hidden)
         .ignoresSafeArea()
+    }
+
+    // ads and future boss levels dont count toward the shown level number
+    private static func displayLevel(for index: Int) -> Int {
+        index + 1 - adLevels.filter { $0 < index }.count
     }
 
     private func advance(from index: Int, entryFrac: CGFloat) {
