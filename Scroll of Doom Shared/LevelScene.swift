@@ -12,7 +12,7 @@ final class LevelScene: SKScene {
     private let edgeInset: CGFloat = 4
     private let openingWidth: CGFloat = 46
     // never 0.5 so a dropped cube lands on solid floor and cant chain-fall
-    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28]
+    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28, 0.72, 0.40]
 
     private enum Cat {
         static let player: UInt32 = 0x1 << 0

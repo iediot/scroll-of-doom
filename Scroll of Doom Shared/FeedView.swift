@@ -3,7 +3,7 @@ import SwiftUI
 
 struct FeedView: View {
 
-    private static let levelCount = 5
+    private static let levelCount = 7
 
     // scenes stay nil until play is pressed, by then the real screen size is
     // known so every level is built at the right size from its first frame

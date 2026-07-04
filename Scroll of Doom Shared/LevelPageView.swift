@@ -95,7 +95,7 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    private static let likeSeeds = [903, 617, 842, 476, 758]
+    private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
         return formatCount(seed - (keyCollected ? 1 : 0) + (heartFilled ? 1 : 0))
