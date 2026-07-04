@@ -79,9 +79,10 @@ struct LevelPageView: View {
                 Text(likeCount).font(.footnote).bold()
                 EngagementButton(icon: "bubble.right.fill", label: commentCount, tint: .white)
                 EngagementButton(icon: "arrowshape.turn.up.right.fill", label: shareCount, tint: .white)
+                EngagementButton(icon: "ellipsis", label: "", tint: .white)
             }
             .padding(.trailing, 12)
-            .padding(.bottom, 230)
+            .padding(.bottom, 193)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -94,7 +95,6 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    // collecting the key takes a like, filling the heart gives it back plus one
     private static let likeSeeds = [903, 617, 842, 476, 758]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]

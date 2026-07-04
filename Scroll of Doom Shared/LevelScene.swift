@@ -5,8 +5,10 @@ final class LevelScene: SKScene {
 
     private let moveSpeed: CGFloat = 260
     private let jumpSpeed: CGFloat = 950
-    private let maxJumps = 1
     private let gravityY: CGFloat = -30
+    // coyote time and jump buffering, the standard fix for eaten jump inputs
+    private let coyoteTime: TimeInterval = 0.08
+    private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
     private let openingWidth: CGFloat = 46
     // never 0.5 so a dropped cube lands on solid floor and cant chain-fall
@@ -36,11 +38,12 @@ final class LevelScene: SKScene {
     private var boxBottomY: CGFloat = 0
     private var boxTopY: CGFloat = 0
     private var boxMidX: CGFloat = 0
-    // needed by the corner constraint in didSimulatePhysics
     private var cornerR: CGFloat = 0
 
     private var moveDirection: CGFloat = 0
-    private var jumpsRemaining = 1
+    private var lastGroundedTime: TimeInterval = -1
+    private var jumpRequestedTime: TimeInterval = -1
+    private var sceneTime: TimeInterval = 0
     private var hasFallenThrough = false
     private var pendingEntryFrac: CGFloat?
     private var lastLayoutSize: CGSize = .zero
@@ -64,9 +67,6 @@ final class LevelScene: SKScene {
         buildLevel()
     }
 
-    // scenes are created at a placeholder size and get the real one later,
-    // the resize event can fire before didMove or while the page is offscreen
-    // and paused, so update also watches the size every frame as a backstop
     override func didChangeSize(_ oldSize: CGSize) {
         guard player != nil else { return }
         relayout()
@@ -80,7 +80,6 @@ final class LevelScene: SKScene {
         lastLayoutSize = size
     }
 
-    // tune these two to line the key up with the rail slot
     private let keyTopOffset: CGFloat = 515
     private let keyRightInset: CGFloat = 35
 
@@ -88,7 +87,6 @@ final class LevelScene: SKScene {
         CGPoint(x: size.width - keyRightInset, y: size.height - keyTopOffset)
     }
 
-    // key spawns down left so it has to be carried up to the heart lock
     private var keySpawnPosition: CGPoint {
         CGPoint(x: 60, y: boxBottomY + 60)
     }
@@ -133,7 +131,6 @@ final class LevelScene: SKScene {
         lastLayoutSize = size
     }
 
-    // upright unfilled heart on the right, this is the lock the key gets carried to
     private func addHeartSlot() {
         let slot = SKNode()
         slot.zPosition = 7
@@ -161,7 +158,7 @@ final class LevelScene: SKScene {
         return SKTexture(image: img)
     }
 
-    // filled heart pops in with the tiktok like bounce, shrink then overshoot and settle
+    // tiktok like pop, shrink then overshoot then settle
     private func fillHeartSlot() {
         guard let slot = heartSlot else { return }
         let filled = SKSpriteNode(texture: heartTexture(systemName: "heart.fill"))
@@ -235,7 +232,6 @@ final class LevelScene: SKScene {
         buildPlatforms()
     }
 
-    // gray barrier sealing the hole, opens only when the key is brought close
     private func buildHatch(startX: CGFloat, endX: CGFloat, y: CGFloat) {
         hatchNode?.removeFromParent()
         hatchNode = nil
@@ -274,7 +270,7 @@ final class LevelScene: SKScene {
         hatchNode = hatch
     }
 
-    // zigzag of platforms up the right side spaced under the jump height, for debugging
+    // 85pt spacing stays under the ~100pt jump height
     private func buildPlatforms() {
         platformsNode?.removeFromParent()
 
@@ -313,27 +309,7 @@ final class LevelScene: SKScene {
 
         let key = SKNode()
         key.zPosition = 8
-
-        let canvasSize = CGSize(width: 40, height: 70)
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
-        let img = renderer.image { _ in
-            UIColor.white.setFill()
-            let cfg = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
-            if let sym = UIImage(systemName: "heart.fill", withConfiguration: cfg)?
-                .withTintColor(.white, renderingMode: .alwaysOriginal) {
-                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 29 - sym.size.height/2,
-                                    width: sym.size.width, height: sym.size.height))
-            }
-            UIBezierPath(roundedRect: CGRect(x: 17.5, y: 29, width: 5, height: 30), cornerRadius: 2.5).fill()
-            UIBezierPath(roundedRect: CGRect(x: 22, y: 53, width: 7, height: 4), cornerRadius: 1).fill()
-            UIBezierPath(roundedRect: CGRect(x: 22, y: 45, width: 5, height: 4), cornerRadius: 1).fill()
-        }
-
-        let sprite = SKSpriteNode(texture: SKTexture(image: img))
-        key.addChild(sprite)
-        key.zRotation = -.pi * 55 / 180
+        key.addChild(SKSpriteNode(texture: heartTexture(systemName: "heart.fill")))
         key.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 20)
@@ -357,10 +333,7 @@ final class LevelScene: SKScene {
     func setMove(_ direction: CGFloat) { moveDirection = direction }
 
     func jump() {
-        guard jumpsRemaining > 0, let body = player?.physicsBody else { return }
-        body.velocity.dy = 0
-        body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
-        jumpsRemaining -= 1
+        jumpRequestedTime = sceneTime
     }
 
     func enterFromTop(atXFraction frac: CGFloat) {
@@ -370,6 +343,7 @@ final class LevelScene: SKScene {
 
     override func update(_ currentTime: TimeInterval) {
         guard let body = player?.physicsBody else { return }
+        sceneTime = currentTime
 
         // catches any resize the events missed before a wrong frame can show
         if size != lastLayoutSize {
@@ -394,11 +368,11 @@ final class LevelScene: SKScene {
 
         // raycast under both bottom corners, grounding via contact events wont
         // work because the border is one body so wall contact keeps it alive
-        if body.velocity.dy <= 1 {
-            var grounded = false
+        var grounded = false
+        if body.velocity.dy <= 20 {
             for ox in [-halfW + 1, halfW - 1] {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
-                let end = CGPoint(x: start.x, y: start.y - halfW - 5)
+                let end = CGPoint(x: start.x, y: start.y - halfW - 6)
                 physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
                     if hit.categoryBitMask == Cat.ground {
                         grounded = true
@@ -407,10 +381,18 @@ final class LevelScene: SKScene {
                 }
                 if grounded { break }
             }
-            if grounded { jumpsRemaining = maxJumps }
+        }
+        if grounded { lastGroundedTime = sceneTime }
+
+        if jumpRequestedTime >= 0,
+           sceneTime - jumpRequestedTime <= jumpBufferTime,
+           sceneTime - lastGroundedTime <= coyoteTime {
+            body.velocity.dy = 0
+            body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
+            jumpRequestedTime = -1
+            lastGroundedTime = -1
         }
 
-        // carrying the key close to the empty heart fills it, then the hatch releases
         if hasKey, !hatchUnlocked, let hatch = hatchNode {
             let dx = player.position.x - keyPosition.x
             let dy = player.position.y - keyPosition.y
