@@ -345,6 +345,7 @@ struct FeedView: View {
             let s = LevelScene(size: size)
             s.levelIndex = i
             s.isAdLevel = Self.adLevels.contains(i)
+            s.bottomInset = LevelPageView.barHeight
             return s
         }
         for (i, scene) in built.enumerated() {

@@ -12,46 +12,99 @@ struct LevelPageView: View {
     let onMove: (CGFloat) -> Void
     let onJump: () -> Void
 
+    // total bar height including the home indicator strip, the scenes box
+    // floor sits right on top of it so the floor gap lands on the create button
+    static let barHeight: CGFloat = 112
+
     @State private var keyCollected = false
     @State private var heartFilled = false
-
-    private let gap: CGFloat = 28
-    private let controlSide: CGFloat = 64
-    private let usernameBottom: CGFloat = 30
-    private let usernameHeight: CGFloat = 46
+    @State private var gateUnlocked = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black
             SpriteView(scene: scene, options: [.ignoresSiblingOrder])
             engagementRail
-            controls
             caption
+            tabBar
         }
         .ignoresSafeArea()
         .onAppear {
             scene.onCollectHeart = { keyCollected = true }
             scene.onHeartFilled = { heartFilled = true }
+            scene.onHatchOpened = { gateUnlocked = true }
         }
     }
 
-    private var controls: some View {
-        HStack(alignment: .bottom) {
-            HStack(spacing: 18) {
-                ControlTriangle(direction: .left, side: controlSide) { pressing in
-                    onMove(pressing ? -1 : 0)
-                }
-                ControlTriangle(direction: .right, side: controlSide) { pressing in
-                    onMove(pressing ? 1 : 0)
-                }
+    // tiktok tab bar, home and search are the move controls, create is the
+    // gate lock and profile is the jump
+    private var tabBar: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(.white.opacity(0.15))
+                .frame(height: 0.5)
+            HStack(spacing: 0) {
+                barHoldItem(icon: "arrowtriangle.left.fill", direction: -1)
+                barHoldItem(icon: "arrowtriangle.right.fill", direction: 1)
+                createGate
+                barItem(icon: "message")
+                jumpItem
             }
+            .padding(.top, 14)
+            .padding(.horizontal, 34)
             Spacer()
-            ControlTriangle(direction: .up, side: controlSide) { pressing in
-                if pressing { onJump() }
-            }
         }
-        .padding(.horizontal, 26)
-        .padding(.bottom, usernameBottom + usernameHeight + gap)
+        .frame(height: Self.barHeight)
+        .background(Color.black)
+    }
+
+    private func barHoldItem(icon: String, direction: CGFloat) -> some View {
+        barItem(icon: icon)
+            .overlay(
+                TouchCatcher { down in
+                    onMove(down ? direction : 0)
+                }
+            )
+    }
+
+    private var jumpItem: some View {
+        barItem(icon: "arrowtriangle.up.fill")
+            .overlay(
+                TouchCatcher { down in
+                    if down { onJump() }
+                }
+            )
+    }
+
+    private func barItem(icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 31))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .contentShape(Rectangle())
+    }
+
+    private var createGate: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(white: 0.55))
+                .frame(width: 50, height: 36)
+                .offset(x: -6)
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(white: 0.3))
+                .frame(width: 50, height: 36)
+                .offset(x: 6)
+            RoundedRectangle(cornerRadius: 10)
+                .fill(.white)
+                .frame(width: 50, height: 36)
+            // locked shows a cross, unlocking spins it 45 degrees into the plus
+            Image(systemName: "plus")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.black)
+                .rotationEffect(.degrees(gateUnlocked ? 0 : 45))
+                .animation(.spring(response: 0.35, dampingFraction: 0.55), value: gateUnlocked)
+        }
+        .frame(maxWidth: .infinity, minHeight: 54)
     }
 
     private static let usernamePatterns = [
@@ -115,7 +168,7 @@ struct LevelPageView: View {
                 Spacer()
             }
             .padding(.leading, 30)
-            .padding(.bottom, usernameBottom)
+            .padding(.bottom, Self.barHeight + 30)
         }
     }
 
@@ -161,40 +214,8 @@ struct LevelPageView: View {
     }
 }
 
-private struct ControlTriangle: View {
-    enum Direction { case left, right, up }
-
-    let direction: Direction
-    let side: CGFloat
-    let onPress: (Bool) -> Void
-
-    @State private var pressed = false
-
-    private var rotation: Angle {
-        switch direction {
-        case .up:    return .degrees(0)
-        case .left:  return .degrees(-90)
-        case .right: return .degrees(90)
-        }
-    }
-
-    var body: some View {
-        RoundedTriangle(cornerRadius: 12)
-            .fill(.white.opacity(pressed ? 0.75 : 1.0))
-            .frame(width: side, height: side)
-            .shadow(color: .black.opacity(0.35), radius: 3)
-            .rotationEffect(rotation)
-            .overlay(
-                // uikit touches instead of swiftui gestures, swiftui is single-touch
-                // and adds lag, raw touches make every button independent and instant
-                TouchCatcher { down in
-                    pressed = down
-                    onPress(down)
-                }
-            )
-    }
-}
-
+// uikit touches instead of swiftui gestures, swiftui is single-touch and adds
+// lag, raw touches make every button independent and instant
 private struct TouchCatcher: UIViewRepresentable {
     let onPress: (Bool) -> Void
 
@@ -227,40 +248,6 @@ private final class TouchCatcherView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         activeTouches = max(0, activeTouches - touches.count)
         if activeTouches == 0 { onPress?(false) }
-    }
-}
-
-private struct RoundedTriangle: Shape {
-    var cornerRadius: CGFloat = 10
-
-    func path(in rect: CGRect) -> Path {
-        let w = min(rect.width, rect.height)
-        let h = w * sqrt(3) / 2
-        let top         = CGPoint(x: rect.midX,       y: rect.midY - h / 2)
-        let bottomRight = CGPoint(x: rect.midX + w/2, y: rect.midY + h / 2)
-        let bottomLeft  = CGPoint(x: rect.midX - w/2, y: rect.midY + h / 2)
-        let pts = [top, bottomRight, bottomLeft]
-
-        var path = Path()
-        for i in 0..<3 {
-            let curr = pts[i]
-            let prev = pts[(i + 2) % 3]
-            let next = pts[(i + 1) % 3]
-            let toPrev = unit(from: curr, to: prev)
-            let toNext = unit(from: curr, to: next)
-            let start = CGPoint(x: curr.x + toPrev.x * cornerRadius, y: curr.y + toPrev.y * cornerRadius)
-            let end   = CGPoint(x: curr.x + toNext.x * cornerRadius, y: curr.y + toNext.y * cornerRadius)
-            if i == 0 { path.move(to: start) } else { path.addLine(to: start) }
-            path.addQuadCurve(to: end, control: curr)
-        }
-        path.closeSubpath()
-        return path
-    }
-
-    private func unit(from a: CGPoint, to b: CGPoint) -> CGPoint {
-        let dx = b.x - a.x, dy = b.y - a.y
-        let len = max(hypot(dx, dy), 0.0001)
-        return CGPoint(x: dx / len, y: dy / len)
     }
 }
 

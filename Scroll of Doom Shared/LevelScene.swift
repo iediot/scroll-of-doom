@@ -23,10 +23,13 @@ final class LevelScene: SKScene {
     var levelIndex = 0
     var isAdLevel = false
     var extraJumps = 0
+    // the tab bar covers the bottom strip, the box floor sits on top of it
+    var bottomInset: CGFloat = 0
     var onFellThrough: ((CGFloat) -> Void)?
     var onCollectHeart: (() -> Void)?
     var onHeartFilled: (() -> Void)?
     var onCollectWings: (() -> Void)?
+    var onHatchOpened: (() -> Void)?
 
     private var player: SKShapeNode!
     private var border: SKShapeNode?
@@ -172,9 +175,11 @@ final class LevelScene: SKScene {
     private func layoutBox() {
         border?.removeFromParent()
 
-        let rect = CGRect(x: edgeInset, y: edgeInset,
+        // floor sits flush on the tab bar so the bottom is flat, no arcs there,
+        // only the top keeps the display corners
+        let rect = CGRect(x: edgeInset, y: bottomInset,
                           width: size.width - edgeInset * 2,
-                          height: size.height - edgeInset * 2)
+                          height: size.height - edgeInset - bottomInset)
         boxBottomY = rect.minY
         boxTopY = rect.maxY
         boxMidX = rect.midX
@@ -191,18 +196,14 @@ final class LevelScene: SKScene {
         let quarter = CGFloat.pi / 2
 
         path.move(to: CGPoint(x: openingEndX, y: minY))
-        path.addLine(to: CGPoint(x: maxX - cr, y: minY))
-        path.addArc(center: CGPoint(x: maxX - cr, y: minY + cr), radius: cr,
-                    startAngle: -quarter, endAngle: 0, clockwise: false)
+        path.addLine(to: CGPoint(x: maxX, y: minY))
         path.addLine(to: CGPoint(x: maxX, y: maxY - cr))
         path.addArc(center: CGPoint(x: maxX - cr, y: maxY - cr), radius: cr,
                     startAngle: 0, endAngle: quarter, clockwise: false)
         path.addLine(to: CGPoint(x: minX + cr, y: maxY))
         path.addArc(center: CGPoint(x: minX + cr, y: maxY - cr), radius: cr,
                     startAngle: quarter, endAngle: .pi, clockwise: false)
-        path.addLine(to: CGPoint(x: minX, y: minY + cr))
-        path.addArc(center: CGPoint(x: minX + cr, y: minY + cr), radius: cr,
-                    startAngle: .pi, endAngle: .pi + quarter, clockwise: false)
+        path.addLine(to: CGPoint(x: minX, y: minY))
         path.addLine(to: CGPoint(x: openingStartX, y: minY))
 
         let shape = SKShapeNode(path: path)
@@ -243,11 +244,7 @@ final class LevelScene: SKScene {
         line.lineCap = .round
         hatch.addChild(line)
 
-        if let texture = GameArt.lockTexture() {
-            let lock = SKSpriteNode(texture: texture)
-            lock.position = CGPoint(x: hatchCenter.x, y: y + 14)
-            hatch.addChild(lock)
-        }
+        // lock state shows on the tab bars create button instead of in scene
 
         let body = SKPhysicsBody(edgeFrom: CGPoint(x: startX, y: y),
                                  to: CGPoint(x: endX, y: y))
@@ -331,6 +328,7 @@ final class LevelScene: SKScene {
     private func openHatch() {
         guard !hatchUnlocked else { return }
         hatchUnlocked = true
+        onHatchOpened?()
         guard let hatch = hatchNode else { return }
         hatch.physicsBody = nil
         hatch.run(.sequence([.wait(forDuration: 0.35),
@@ -451,38 +449,6 @@ final class LevelScene: SKScene {
         } else if player.position.x > wallMax {
             player.position.x = wallMax
             if body.velocity.dx > 0 { body.velocity.dx = 0 }
-        }
-
-        let arcTopY = boxBottomY + cornerR
-        if player.position.y - halfW < arcTopY {
-            constrainToCorner(center: CGPoint(x: size.width - edgeInset - cornerR, y: arcTopY),
-                              cubeCorner: CGPoint(x: player.position.x + halfW,
-                                                  y: player.position.y - halfW),
-                              rightSide: true, body: body)
-            constrainToCorner(center: CGPoint(x: edgeInset + cornerR, y: arcTopY),
-                              cubeCorner: CGPoint(x: player.position.x - halfW,
-                                                  y: player.position.y - halfW),
-                              rightSide: false, body: body)
-        }
-    }
-
-    // projects the cube back onto the arc and cancels only the outward velocity
-    private func constrainToCorner(center: CGPoint, cubeCorner q: CGPoint,
-                                   rightSide: Bool, body: SKPhysicsBody) {
-        guard q.y < center.y, rightSide ? q.x > center.x : q.x < center.x else { return }
-        let dx = q.x - center.x, dy = q.y - center.y
-        let dist = sqrt(dx * dx + dy * dy)
-        guard dist > cornerR, dist > 0 else { return }
-
-        let scale = cornerR / dist
-        player.position.x += (center.x + dx * scale) - q.x
-        player.position.y += (center.y + dy * scale) - q.y
-
-        let nx = dx / dist, ny = dy / dist
-        let vOut = body.velocity.dx * nx + body.velocity.dy * ny
-        if vOut > 0 {
-            body.velocity.dx -= vOut * nx
-            body.velocity.dy -= vOut * ny
         }
     }
 }
