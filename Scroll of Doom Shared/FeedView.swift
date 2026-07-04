@@ -3,7 +3,8 @@ import SwiftUI
 
 struct FeedView: View {
 
-    private static let levelCount = 7
+    private static let levelCount = 8
+    private static let adLevels: Set<Int> = [7]
 
     // scenes stay nil until play is pressed, by then the real screen size is
     // known so every level is built at the right size from its first frame
@@ -40,10 +41,13 @@ struct FeedView: View {
         let built = (0..<Self.levelCount).map { i -> LevelScene in
             let s = LevelScene(size: size)
             s.levelIndex = i
+            s.isAdLevel = Self.adLevels.contains(i)
             return s
         }
         for (i, scene) in built.enumerated() {
             scene.onFellThrough = { xFrac in advance(from: i, entryFrac: xFrac) }
+            // powerups persist for the whole run
+            scene.onCollectWings = { for s in built { s.extraJumps = 1 } }
         }
         scenes = built
     }
@@ -53,6 +57,7 @@ struct FeedView: View {
             LazyVStack(spacing: 0) {
                 ForEach(0..<Self.levelCount, id: \.self) { index in
                     LevelPageView(levelIndex: index,
+                                  isAd: Self.adLevels.contains(index),
                                   scene: scenes[index],
                                   onMove: { dir in
                                       heldDirection = dir

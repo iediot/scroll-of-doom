@@ -4,6 +4,7 @@ import SpriteKit
 
 struct LevelPageView: View {
     let levelIndex: Int
+    let isAd: Bool
     let scene: LevelScene
     // input goes through feedview so a held press carries across level transitions
     let onMove: (CGFloat) -> Void
@@ -56,11 +57,18 @@ struct LevelPageView: View {
             Spacer()
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("@level_\(levelIndex + 1)")
+                    Text(isAd ? "@your_ad_here" : "@level_\(levelIndex + 1)")
                         .font(.headline).bold()
-                    Text("Level \(levelIndex + 1)")
+                    Text(isAd ? "Get wings today" : "Level \(levelIndex + 1)")
                         .font(.subheadline)
                         .opacity(0.9)
+                    if isAd {
+                        Text("Sponsored")
+                            .font(.caption).bold()
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.white.opacity(0.25), in: Capsule())
+                    }
                 }
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.5), radius: 4)
@@ -95,7 +103,7 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689]
+    private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689, 289]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
         return formatCount(seed - (keyCollected ? 1 : 0) + (heartFilled ? 1 : 0))

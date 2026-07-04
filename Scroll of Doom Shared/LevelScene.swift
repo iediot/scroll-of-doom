@@ -4,31 +4,35 @@ import UIKit
 final class LevelScene: SKScene {
 
     private let moveSpeed: CGFloat = 260
-    private let jumpSpeed: CGFloat = 950
+    private let jumpSpeed: CGFloat = 715
     private let gravityY: CGFloat = -30
     // coyote time and jump buffering, the standard fix for eaten jump inputs
     private let coyoteTime: TimeInterval = 0.08
     private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
     private let openingWidth: CGFloat = 46
-    // never 0.5 so a dropped cube lands on solid floor and cant chain-fall
-    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28, 0.72, 0.40]
+    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28, 0.72, 0.40, 0.62]
 
     private enum Cat {
         static let player: UInt32 = 0x1 << 0
         static let ground: UInt32 = 0x1 << 1
         static let heart:  UInt32 = 0x1 << 2
+        static let wings:  UInt32 = 0x1 << 3
     }
 
     var levelIndex = 0
+    var isAdLevel = false
+    var extraJumps = 0
     var onFellThrough: ((CGFloat) -> Void)?
     var onCollectHeart: (() -> Void)?
     var onHeartFilled: (() -> Void)?
+    var onCollectWings: (() -> Void)?
 
     private var player: SKShapeNode!
     private var border: SKShapeNode?
     private var heart: SKNode?
     private var heartSlot: SKNode?
+    private var wings: SKNode?
     private var hatchNode: SKNode?
     private var platformsNode: SKNode?
     private var hatchCenter: CGPoint = .zero
@@ -44,6 +48,7 @@ final class LevelScene: SKScene {
     private var lastGroundedTime: TimeInterval = -1
     private var jumpRequestedTime: TimeInterval = -1
     private var sceneTime: TimeInterval = 0
+    private var airJumpsUsed = 0
     private var hasFallenThrough = false
     private var pendingEntryFrac: CGFloat?
     private var lastLayoutSize: CGSize = .zero
@@ -77,6 +82,7 @@ final class LevelScene: SKScene {
         layoutBox()
         heartSlot?.position = keyPosition
         heart?.position = keySpawnPosition
+        wings?.position = keySpawnPosition
         lastLayoutSize = size
     }
 
@@ -109,7 +115,7 @@ final class LevelScene: SKScene {
         body.friction = 0
         body.linearDamping = 0
         body.categoryBitMask = Cat.player
-        body.contactTestBitMask = Cat.ground | Cat.heart
+        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings
         body.collisionBitMask = Cat.ground
         // sweeps movement path each frame so cube cant slip past the boundary
         body.usesPreciseCollisionDetection = true
@@ -126,7 +132,11 @@ final class LevelScene: SKScene {
 
         layoutBox()
         addHeartSlot()
-        addHeartKey()
+        if isAdLevel {
+            addWings()
+        } else {
+            addHeartKey()
+        }
         respawnCube()
         lastLayoutSize = size
     }
@@ -270,7 +280,7 @@ final class LevelScene: SKScene {
         hatchNode = hatch
     }
 
-    // 85pt spacing stays under the ~100pt jump height
+    // 40pt spacing stays under the ~50pt jump height
     private func buildPlatforms() {
         platformsNode?.removeFromParent()
 
@@ -279,10 +289,10 @@ final class LevelScene: SKScene {
 
         let keyY = keyPosition.y
         let width: CGFloat = 70
-        var y = boxBottomY + 85
+        var y = boxBottomY + 40
         var i = 0
         while y < keyY - 35 {
-            let cx = i % 2 == 0 ? size.width - 75 : size.width - 185
+            let cx = i % 2 == 0 ? size.width - 75 : size.width - 160
             let a = CGPoint(x: cx - width / 2, y: y)
             let b = CGPoint(x: cx + width / 2, y: y)
             let path = CGMutablePath()
@@ -296,7 +306,7 @@ final class LevelScene: SKScene {
             body.categoryBitMask = Cat.ground
             line.physicsBody = body
             node.addChild(line)
-            y += 85
+            y += 40
             i += 1
         }
 
@@ -320,6 +330,61 @@ final class LevelScene: SKScene {
 
         addChild(key)
         heart = key
+    }
+
+    private func addWings() {
+        wings?.removeFromParent()
+
+        let node = SKNode()
+        node.zPosition = 8
+        node.addChild(SKSpriteNode(texture: wingsTexture()))
+        node.position = keySpawnPosition
+
+        let body = SKPhysicsBody(circleOfRadius: 22)
+        body.isDynamic = false
+        body.categoryBitMask = Cat.wings
+        body.collisionBitMask = 0
+        node.physicsBody = body
+
+        addChild(node)
+        wings = node
+    }
+
+    private func wingsTexture() -> SKTexture {
+        let canvasSize = CGSize(width: 60, height: 36)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
+        let img = renderer.image { ctx in
+            UIColor.white.setFill()
+            let wing = UIBezierPath()
+            wing.move(to: CGPoint(x: 31, y: 28))
+            wing.addQuadCurve(to: CGPoint(x: 56, y: 6), controlPoint: CGPoint(x: 38, y: 4))
+            wing.addQuadCurve(to: CGPoint(x: 46, y: 21), controlPoint: CGPoint(x: 53, y: 15))
+            wing.addQuadCurve(to: CGPoint(x: 38, y: 26), controlPoint: CGPoint(x: 43, y: 25))
+            wing.addQuadCurve(to: CGPoint(x: 31, y: 28), controlPoint: CGPoint(x: 34, y: 28))
+            wing.close()
+            wing.fill()
+
+            // mirror for the left wing
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: canvasSize.width, y: 0)
+            ctx.cgContext.scaleBy(x: -1, y: 1)
+            wing.fill()
+            ctx.cgContext.restoreGState()
+        }
+        return SKTexture(image: img)
+    }
+
+    private func openHatch() {
+        guard !hatchUnlocked else { return }
+        hatchUnlocked = true
+        guard let hatch = hatchNode else { return }
+        hatch.physicsBody = nil
+        hatch.run(.sequence([.wait(forDuration: 0.35),
+                             .fadeOut(withDuration: 0.25),
+                             .removeFromParent()]))
+        hatchNode = nil
     }
 
     private func respawnCube() {
@@ -382,28 +447,28 @@ final class LevelScene: SKScene {
                 if grounded { break }
             }
         }
-        if grounded { lastGroundedTime = sceneTime }
-
-        if jumpRequestedTime >= 0,
-           sceneTime - jumpRequestedTime <= jumpBufferTime,
-           sceneTime - lastGroundedTime <= coyoteTime {
-            body.velocity.dy = 0
-            body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
-            jumpRequestedTime = -1
-            lastGroundedTime = -1
+        if grounded {
+            lastGroundedTime = sceneTime
+            airJumpsUsed = 0
         }
 
-        if hasKey, !hatchUnlocked, let hatch = hatchNode {
+        if jumpRequestedTime >= 0, sceneTime - jumpRequestedTime <= jumpBufferTime {
+            let groundJump = sceneTime - lastGroundedTime <= coyoteTime
+            if groundJump || airJumpsUsed < extraJumps {
+                if !groundJump { airJumpsUsed += 1 }
+                body.velocity.dy = 0
+                body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
+                jumpRequestedTime = -1
+                lastGroundedTime = -1
+            }
+        }
+
+        if hasKey, !hatchUnlocked {
             let dx = player.position.x - keyPosition.x
             let dy = player.position.y - keyPosition.y
             if dx * dx + dy * dy < 70 * 70 {
-                hatchUnlocked = true
                 fillHeartSlot()
-                hatch.physicsBody = nil
-                hatch.run(.sequence([.wait(forDuration: 0.35),
-                                     .fadeOut(withDuration: 0.25),
-                                     .removeFromParent()]))
-                hatchNode = nil
+                openHatch()
             }
         }
 
@@ -475,6 +540,16 @@ extension LevelScene: SKPhysicsContactDelegate {
                 heart = nil
                 hasKey = true
                 onCollectHeart?()
+                node.run(.sequence([
+                    .group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),
+                    .removeFromParent()
+                ]))
+            }
+        case Cat.wings:
+            if let node = other.node, node == wings {
+                wings = nil
+                onCollectWings?()
+                openHatch()
                 node.run(.sequence([
                     .group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),
                     .removeFromParent()
