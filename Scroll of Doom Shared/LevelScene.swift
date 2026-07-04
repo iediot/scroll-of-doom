@@ -21,6 +21,7 @@ final class LevelScene: SKScene {
     var levelIndex = 0
     var onFellThrough: ((CGFloat) -> Void)?
     var onCollectHeart: (() -> Void)?
+    var onHeartFilled: (() -> Void)?
 
     private var player: SKShapeNode!
     private var border: SKShapeNode?
@@ -75,7 +76,7 @@ final class LevelScene: SKScene {
     private func relayout() {
         layoutBox()
         heartSlot?.position = keyPosition
-        heart?.position = keyPosition
+        heart?.position = keySpawnPosition
         lastLayoutSize = size
     }
 
@@ -85,6 +86,11 @@ final class LevelScene: SKScene {
 
     private var keyPosition: CGPoint {
         CGPoint(x: size.width - keyRightInset, y: size.height - keyTopOffset)
+    }
+
+    // key spawns down left so it has to be carried up to the heart lock
+    private var keySpawnPosition: CGPoint {
+        CGPoint(x: 60, y: boxBottomY + 60)
     }
 
     private func buildLevel() {
@@ -127,30 +133,51 @@ final class LevelScene: SKScene {
         lastLayoutSize = size
     }
 
-    // unfilled heart at the exact spot of the key, pure ui so it stays after pickup
+    // upright unfilled heart on the right, this is the lock the key gets carried to
     private func addHeartSlot() {
         let slot = SKNode()
         slot.zPosition = 7
 
-        let canvasSize = CGSize(width: 40, height: 70)
+        let sprite = SKSpriteNode(texture: heartTexture(systemName: "heart"))
+        slot.addChild(sprite)
+        slot.position = keyPosition
+        addChild(slot)
+        heartSlot = slot
+    }
+
+    private func heartTexture(systemName: String) -> SKTexture {
+        let canvasSize = CGSize(width: 40, height: 40)
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
         let img = renderer.image { _ in
             let cfg = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
-            if let sym = UIImage(systemName: "heart", withConfiguration: cfg)?
+            if let sym = UIImage(systemName: systemName, withConfiguration: cfg)?
                 .withTintColor(.white, renderingMode: .alwaysOriginal) {
-                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 29 - sym.size.height/2,
+                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 20 - sym.size.height/2,
                                     width: sym.size.width, height: sym.size.height))
             }
         }
+        return SKTexture(image: img)
+    }
 
-        let sprite = SKSpriteNode(texture: SKTexture(image: img))
-        slot.addChild(sprite)
-        slot.zRotation = -.pi * 55 / 180
-        slot.position = keyPosition
-        addChild(slot)
-        heartSlot = slot
+    // filled heart pops in with the tiktok like bounce, shrink then overshoot and settle
+    private func fillHeartSlot() {
+        guard let slot = heartSlot else { return }
+        let filled = SKSpriteNode(texture: heartTexture(systemName: "heart.fill"))
+        filled.alpha = 0
+        slot.addChild(filled)
+        filled.run(.fadeIn(withDuration: 0.1))
+
+        let shrink = SKAction.scale(to: 0.75, duration: 0.08)
+        shrink.timingMode = .easeIn
+        let overshoot = SKAction.scale(to: 1.35, duration: 0.14)
+        overshoot.timingMode = .easeOut
+        let settle = SKAction.scale(to: 1.0, duration: 0.12)
+        settle.timingMode = .easeInEaseOut
+        slot.run(.sequence([shrink, overshoot, settle]))
+
+        onHeartFilled?()
     }
 
     private func layoutBox() {
@@ -307,7 +334,7 @@ final class LevelScene: SKScene {
         let sprite = SKSpriteNode(texture: SKTexture(image: img))
         key.addChild(sprite)
         key.zRotation = -.pi * 55 / 180
-        key.position = keyPosition
+        key.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 20)
         body.isDynamic = false
@@ -383,14 +410,17 @@ final class LevelScene: SKScene {
             if grounded { jumpsRemaining = maxJumps }
         }
 
-        // carrying the key close to the hatch unlocks it
+        // carrying the key close to the empty heart fills it, then the hatch releases
         if hasKey, !hatchUnlocked, let hatch = hatchNode {
-            let dx = player.position.x - hatchCenter.x
-            let dy = player.position.y - hatchCenter.y
+            let dx = player.position.x - keyPosition.x
+            let dy = player.position.y - keyPosition.y
             if dx * dx + dy * dy < 70 * 70 {
                 hatchUnlocked = true
+                fillHeartSlot()
                 hatch.physicsBody = nil
-                hatch.run(.sequence([.fadeOut(withDuration: 0.25), .removeFromParent()]))
+                hatch.run(.sequence([.wait(forDuration: 0.35),
+                                     .fadeOut(withDuration: 0.25),
+                                     .removeFromParent()]))
                 hatchNode = nil
             }
         }

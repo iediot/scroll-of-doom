@@ -10,6 +10,7 @@ struct LevelPageView: View {
     let onJump: () -> Void
 
     @State private var keyCollected = false
+    @State private var heartFilled = false
 
     private let gap: CGFloat = 28
     private let controlSide: CGFloat = 64
@@ -27,6 +28,7 @@ struct LevelPageView: View {
         .ignoresSafeArea()
         .onAppear {
             scene.onCollectHeart = { keyCollected = true }
+            scene.onHeartFilled = { heartFilled = true }
         }
     }
 
@@ -92,11 +94,11 @@ struct LevelPageView: View {
             .overlay(Image(systemName: "square.fill").foregroundStyle(.white))
     }
 
-    // collecting the key takes a like with it, kept under 1k so the -1 is visible
+    // collecting the key takes a like, filling the heart gives it back plus one
     private static let likeSeeds = [903, 617, 842, 476, 758]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
-        return formatCount(seed - (keyCollected ? 1 : 0))
+        return formatCount(seed - (keyCollected ? 1 : 0) + (heartFilled ? 1 : 0))
     }
     private var commentCount: String { formatCount(84 + levelIndex * 53) }
     private var shareCount: String   { formatCount(12 + levelIndex * 9) }
