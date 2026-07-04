@@ -17,6 +17,7 @@
 				Actions.sks,
 				Assets.xcassets,
 				FeedView.swift,
+				GameArt.swift,
 				GameScene.sks,
 				GameScene.swift,
 				LevelPageView.swift,

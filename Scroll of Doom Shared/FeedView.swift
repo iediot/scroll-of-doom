@@ -1,6 +1,29 @@
 #if os(iOS)
 import SwiftUI
 
+struct SaveSlot: Codable {
+    var level = 0
+    var powerups: Set<Powerup> = []
+    var lastPlayed = Date()
+}
+
+enum SaveStore {
+    private static let key = "saveSlots"
+
+    static func load() -> [SaveSlot?] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let slots = try? JSONDecoder().decode([SaveSlot?].self, from: data),
+              slots.count == 3 else { return [nil, nil, nil] }
+        return slots
+    }
+
+    static func save(_ slots: [SaveSlot?]) {
+        if let data = try? JSONEncoder().encode(slots) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
 struct FeedView: View {
 
     private static let levelCount = 15
@@ -13,6 +36,9 @@ struct FeedView: View {
     @State private var loading = false
     @State private var showGame = false
     @State private var screenSize: CGSize = .zero
+    @State private var slots: [SaveSlot?] = SaveStore.load()
+    @State private var activeSlot: Int?
+    @State private var choosingSlot = false
 
     var body: some View {
         GeometryReader { geo in
@@ -27,6 +53,8 @@ struct FeedView: View {
                 if !showGame {
                     if loading {
                         loadingScreen
+                    } else if choosingSlot {
+                        slotScreen
                     } else if let openApp {
                         appScreen(openApp)
                     } else {
@@ -65,31 +93,175 @@ struct FeedView: View {
         start(size: size)
     }
 
-    private func beginLoading(size: CGSize) {
+    // mimics the tiktok saved page, saves shown as video thumbnails
+    private var slotScreen: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black
+            VStack(spacing: 0) {
+                Text("Saved")
+                    .font(.headline).bold()
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 62)
+
+                HStack(spacing: 30) {
+                    VStack(spacing: 7) {
+                        Text("Videos")
+                            .font(.subheadline).bold()
+                            .foregroundStyle(.white)
+                        Rectangle().fill(.white).frame(width: 34, height: 2)
+                    }
+                    VStack(spacing: 7) {
+                        Text("Sounds")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.4))
+                        Color.clear.frame(width: 34, height: 2)
+                    }
+                    VStack(spacing: 7) {
+                        Text("Posts")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.4))
+                        Color.clear.frame(width: 34, height: 2)
+                    }
+                }
+                .padding(.top, 20)
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3),
+                          spacing: 2) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Button {
+                            chooseSlot(i)
+                        } label: {
+                            slotCard(i)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 18)
+                .padding(.horizontal, 2)
+
+                Spacer()
+            }
+
+            Button {
+                choosingSlot = false
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(24)
+            }
+            .padding(.top, 40)
+        }
+    }
+
+    private func slotCard(_ i: Int) -> some View {
+        ZStack {
+            Rectangle().fill(Color(white: 0.09))
+            if slots[i] != nil {
+                // tiny mock of a level as the video cover
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(.white.opacity(0.9), lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 2.5)
+                        .fill(.white)
+                        .frame(width: 13, height: 13)
+                        .padding(.bottom, 10)
+                }
+                .padding(12)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 24, weight: .medium))
+                    Text("new game")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.white.opacity(0.45))
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let slot = slots[i] {
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9))
+                    Text("lvl \(Self.displayLevel(for: slot.level))")
+                        .font(.caption2).bold()
+                }
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 2)
+                .padding(7)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let slot = slots[i], !slot.powerups.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(Array(slot.powerups), id: \.self) { p in
+                        Image(uiImage: GameArt.icon(for: p))
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 22)
+                    }
+                }
+                .padding(.horizontal, 5)
+                .padding(.vertical, 4)
+                .background(.white.opacity(0.2), in: Capsule())
+                .padding(6)
+            }
+        }
+        .aspectRatio(0.72, contentMode: .fit)
+        .contentShape(Rectangle())
+    }
+
+    private func chooseSlot(_ i: Int) {
+        activeSlot = i
+        let slot = slots[i] ?? SaveSlot()
+        slots[i] = slot
+        SaveStore.save(slots)
+
         if scenes != nil {
-            enterGame()
+            enterGame(slot)
         } else {
             // fallback if play lands before the preload finished
             loading = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                preload(size: size)
+                preload(size: screenSize)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    enterGame()
+                    enterGame(slot)
                 }
             }
         }
     }
 
-    private func enterGame() {
+    private func enterGame(_ slot: SaveSlot) {
+        guard let scenes else { return }
+        let level = min(max(slot.level, 0), Self.levelCount - 1)
+        if slot.powerups.contains(.doubleJump) {
+            for s in scenes { s.extraJumps = 1 }
+        }
         // the preloaded cube has been idling, drop it in fresh from the top
-        scenes?.first?.enterFromTop(atXFraction: 0.5)
-        currentLevel = 0
+        scenes[level].enterFromTop(atXFraction: 0.5)
+        currentLevel = level
         loading = false
+        choosingSlot = false
         showGame = true
     }
 
+    private func saveProgress() {
+        guard let a = activeSlot, var slot = slots[a] else { return }
+        if let level = currentLevel { slot.level = level }
+        if scenes?.first?.extraJumps ?? 0 > 0 {
+            slot.powerups.insert(.doubleJump)
+        }
+        slot.lastPlayed = Date()
+        slots[a] = slot
+        SaveStore.save(slots)
+    }
+
     private func exitGame() {
+        saveProgress()
         showGame = false
+        choosingSlot = false
+        activeSlot = nil
         heldDirection = 0
         currentLevel = 0
         scenes = nil
@@ -110,7 +282,7 @@ struct FeedView: View {
                     AppIcon(art: .settings, label: "Settings") { openApp = "settings" }
                     AppIcon(art: .tips, label: "Tips") { openApp = "tips" }
                     AppIcon(art: .music, label: "Music") { openApp = "music" }
-                    AppIcon(art: .play, label: "Scroll of Doom") { beginLoading(size: size) }
+                    AppIcon(art: .play, label: "Scroll of Doom") { choosingSlot = true }
                     AppIcon(art: .messages, label: "Messages")
                     AppIcon(art: .camera, label: "Camera")
                     AppIcon(art: .photos, label: "Photos")
@@ -178,7 +350,10 @@ struct FeedView: View {
         for (i, scene) in built.enumerated() {
             scene.onFellThrough = { xFrac in advance(from: i, entryFrac: xFrac) }
             // powerups persist for the whole run
-            scene.onCollectWings = { for s in built { s.extraJumps = 1 } }
+            scene.onCollectWings = {
+                for s in built { s.extraJumps = 1 }
+                saveProgress()
+            }
         }
         scenes = built
     }
@@ -240,6 +415,7 @@ struct FeedView: View {
         withAnimation(.easeInOut(duration: 0.45)) {
             currentLevel = index + 1
         }
+        saveProgress()
     }
 }
 

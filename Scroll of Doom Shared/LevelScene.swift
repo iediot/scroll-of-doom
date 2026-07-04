@@ -143,33 +143,17 @@ final class LevelScene: SKScene {
         let slot = SKNode()
         slot.zPosition = 7
 
-        let sprite = SKSpriteNode(texture: heartTexture(systemName: "heart"))
+        let sprite = SKSpriteNode(texture: GameArt.heartTexture(filled: false))
         slot.addChild(sprite)
         slot.position = keyPosition
         addChild(slot)
         heartSlot = slot
     }
 
-    private func heartTexture(systemName: String) -> SKTexture {
-        let canvasSize = CGSize(width: 40, height: 40)
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
-        let img = renderer.image { _ in
-            let cfg = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
-            if let sym = UIImage(systemName: systemName, withConfiguration: cfg)?
-                .withTintColor(.white, renderingMode: .alwaysOriginal) {
-                sym.draw(in: CGRect(x: 20 - sym.size.width/2, y: 20 - sym.size.height/2,
-                                    width: sym.size.width, height: sym.size.height))
-            }
-        }
-        return SKTexture(image: img)
-    }
-
     // tiktok like pop, shrink then overshoot then settle
     private func fillHeartSlot() {
         guard let slot = heartSlot else { return }
-        let filled = SKSpriteNode(texture: heartTexture(systemName: "heart.fill"))
+        let filled = SKSpriteNode(texture: GameArt.heartTexture(filled: true))
         filled.alpha = 0
         slot.addChild(filled)
         filled.run(.fadeIn(withDuration: 0.1))
@@ -259,12 +243,8 @@ final class LevelScene: SKScene {
         line.lineCap = .round
         hatch.addChild(line)
 
-        let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
-        if let sym = UIImage(systemName: "lock.fill", withConfiguration: cfg)?
-            .withTintColor(gray, renderingMode: .alwaysOriginal) {
-            let renderer = UIGraphicsImageRenderer(size: sym.size)
-            let flat = renderer.image { _ in sym.draw(at: .zero) }
-            let lock = SKSpriteNode(texture: SKTexture(image: flat))
+        if let texture = GameArt.lockTexture() {
+            let lock = SKSpriteNode(texture: texture)
             lock.position = CGPoint(x: hatchCenter.x, y: y + 14)
             hatch.addChild(lock)
         }
@@ -317,7 +297,7 @@ final class LevelScene: SKScene {
 
         let key = SKNode()
         key.zPosition = 8
-        key.addChild(SKSpriteNode(texture: heartTexture(systemName: "heart.fill")))
+        key.addChild(SKSpriteNode(texture: GameArt.heartTexture(filled: true)))
         key.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 20)
@@ -335,7 +315,7 @@ final class LevelScene: SKScene {
 
         let node = SKNode()
         node.zPosition = 8
-        node.addChild(SKSpriteNode(texture: wingsTexture()))
+        node.addChild(SKSpriteNode(texture: GameArt.wingsTexture()))
         node.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 22)
@@ -346,32 +326,6 @@ final class LevelScene: SKScene {
 
         addChild(node)
         wings = node
-    }
-
-    private func wingsTexture() -> SKTexture {
-        let canvasSize = CGSize(width: 60, height: 36)
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: canvasSize, format: format)
-        let img = renderer.image { ctx in
-            UIColor.white.setFill()
-            let wing = UIBezierPath()
-            wing.move(to: CGPoint(x: 31, y: 28))
-            wing.addQuadCurve(to: CGPoint(x: 56, y: 6), controlPoint: CGPoint(x: 38, y: 4))
-            wing.addQuadCurve(to: CGPoint(x: 46, y: 21), controlPoint: CGPoint(x: 53, y: 15))
-            wing.addQuadCurve(to: CGPoint(x: 38, y: 26), controlPoint: CGPoint(x: 43, y: 25))
-            wing.addQuadCurve(to: CGPoint(x: 31, y: 28), controlPoint: CGPoint(x: 34, y: 28))
-            wing.close()
-            wing.fill()
-
-            // mirror for the left wing
-            ctx.cgContext.saveGState()
-            ctx.cgContext.translateBy(x: canvasSize.width, y: 0)
-            ctx.cgContext.scaleBy(x: -1, y: 1)
-            wing.fill()
-            ctx.cgContext.restoreGState()
-        }
-        return SKTexture(image: img)
     }
 
     private func openHatch() {
