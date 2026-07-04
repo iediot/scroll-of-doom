@@ -6,34 +6,45 @@ struct FeedView: View {
     private static let levelCount = 15
     private static let adLevels: Set<Int> = [7]
 
-    private enum MenuScreen { case home, settings }
-
-    // scenes stay nil until play is pressed, by then the real screen size is
-    // known so every level is built at the right size from its first frame
     @State private var scenes: [LevelScene]?
     @State private var currentLevel: Int? = 0
     @State private var heldDirection: CGFloat = 0
-    @State private var menuScreen: MenuScreen = .home
+    @State private var openApp: String?
     @State private var loading = false
-    @State private var revealed = false
+    @State private var showGame = false
+    @State private var screenSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
-            if let scenes, revealed {
-                feed(scenes)
-            } else if loading {
-                loadingScreen
-            } else if menuScreen == .settings {
-                settings
-            } else {
-                homeScreen(size: geo.size)
+            ZStack {
+                // the game stays mounted invisibly behind the menu so spritekit
+                // and metal warm up before play is ever pressed
+                if let scenes {
+                    feed(scenes)
+                        .opacity(showGame ? 1 : 0)
+                        .allowsHitTesting(showGame)
+                }
+                if !showGame {
+                    if loading {
+                        loadingScreen
+                    } else if let openApp {
+                        appScreen(openApp)
+                    } else {
+                        homeScreen(size: geo.size)
+                    }
+                }
+            }
+            .onAppear {
+                screenSize = geo.size
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    preload(size: geo.size)
+                }
             }
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
     }
 
-    // covers the scene building hitch after pressing play
     private var loadingScreen: some View {
         ZStack {
             Color.black
@@ -49,14 +60,42 @@ struct FeedView: View {
         }
     }
 
+    private func preload(size: CGSize) {
+        guard scenes == nil else { return }
+        start(size: size)
+    }
+
     private func beginLoading(size: CGSize) {
-        loading = true
-        // let the spinner render a frame before the heavy scene build
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            start(size: size)
+        if scenes != nil {
+            enterGame()
+        } else {
+            // fallback if play lands before the preload finished
+            loading = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                preload(size: size)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    enterGame()
+                }
+            }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            revealed = true
+    }
+
+    private func enterGame() {
+        // the preloaded cube has been idling, drop it in fresh from the top
+        scenes?.first?.enterFromTop(atXFraction: 0.5)
+        currentLevel = 0
+        loading = false
+        showGame = true
+    }
+
+    private func exitGame() {
+        showGame = false
+        heldDirection = 0
+        currentLevel = 0
+        scenes = nil
+        // rebuild fresh scenes warm behind the menu for the next run
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            preload(size: screenSize)
         }
     }
 
@@ -68,15 +107,16 @@ struct FeedView: View {
                 widget
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4),
                           spacing: 22) {
-                    AppIcon(art: .settings, label: "Settings") { menuScreen = .settings }
+                    AppIcon(art: .settings, label: "Settings") { openApp = "settings" }
+                    AppIcon(art: .tips, label: "Tips") { openApp = "tips" }
+                    AppIcon(art: .music, label: "Music") { openApp = "music" }
+                    AppIcon(art: .play, label: "Scroll of Doom") { beginLoading(size: size) }
                     AppIcon(art: .messages, label: "Messages")
                     AppIcon(art: .camera, label: "Camera")
                     AppIcon(art: .photos, label: "Photos")
                     AppIcon(art: .clock, label: "Clock")
                     AppIcon(art: .calendar, label: "Calendar")
-                    AppIcon(art: .music, label: "Music")
                     AppIcon(art: .maps, label: "Maps")
-                    AppIcon(art: .play, label: "Scroll of Doom") { beginLoading(size: size) }
                 }
                 Spacer()
                 dock
@@ -109,15 +149,15 @@ struct FeedView: View {
             )
     }
 
-    private var settings: some View {
+    private func appScreen(_ name: String) -> some View {
         ZStack(alignment: .topLeading) {
             Color.black
-            Text("settings")
+            Text(name)
                 .font(.title2)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Button {
-                menuScreen = .home
+                openApp = nil
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 22, weight: .semibold))
@@ -144,6 +184,22 @@ struct FeedView: View {
     }
 
     private func feed(_ scenes: [LevelScene]) -> some View {
+        ZStack(alignment: .topLeading) {
+            feedScroll(scenes)
+            Button {
+                exitGame()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.5), radius: 3)
+                    .padding(24)
+            }
+            .padding(.top, 54)
+        }
+    }
+
+    private func feedScroll(_ scenes: [LevelScene]) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(0..<Self.levelCount, id: \.self) { index in
@@ -189,7 +245,7 @@ struct FeedView: View {
 
 private struct AppIcon: View {
     enum Art {
-        case settings, messages, camera, photos, clock, calendar,
+        case settings, tips, messages, camera, photos, clock, calendar,
              music, maps, phone, safari, mail, facetime, play
     }
 
@@ -228,6 +284,13 @@ private struct AppIcon: View {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 34))
                     .foregroundStyle(Color(white: 0.8))
+            }
+        case .tips:
+            ZStack {
+                gradient(0.75, 0.5)
+                Image(systemName: "lightbulb.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.white)
             }
         case .messages:
             ZStack {
