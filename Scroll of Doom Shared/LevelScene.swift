@@ -5,13 +5,13 @@ final class LevelScene: SKScene {
 
     private let moveSpeed: CGFloat = 260
     private let jumpSpeed: CGFloat = 715
-    private let gravityY: CGFloat = -30
-    // coyote time and jump buffering, the standard fix for eaten jump inputs
+    private let gravityY: CGFloat = -26
+    // coyote time and jump buffering
     private let coyoteTime: TimeInterval = 0.08
     private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
     private let openingWidth: CGFloat = 46
-    private let openingFracs: [CGFloat] = [0.24, 0.76, 0.34, 0.66, 0.28, 0.72, 0.40, 0.62]
+    private let openingFrac: CGFloat = 0.5
 
     private enum Cat {
         static let player: UInt32 = 0x1 << 0
@@ -53,8 +53,6 @@ final class LevelScene: SKScene {
     private var pendingEntryFrac: CGFloat?
     private var lastLayoutSize: CGSize = .zero
 
-    private var openingFrac: CGFloat { openingFracs[levelIndex % openingFracs.count] }
-
     // reads the real iphone display corner radius, falls back to a safe default
     private var displayCornerRadius: CGFloat {
         if let screen = view?.window?.windowScene?.screen,
@@ -69,13 +67,13 @@ final class LevelScene: SKScene {
         backgroundColor = .black
         physicsWorld.gravity = CGVector(dx: 0, dy: gravityY)
         physicsWorld.contactDelegate = self
-        buildLevel()
+        // representing must not rebuild and reset a level in progress
+        if player == nil { buildLevel() } else { relayout() }
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
         guard player != nil else { return }
         relayout()
-        respawnCube()
     }
 
     private func relayout() {
@@ -280,7 +278,7 @@ final class LevelScene: SKScene {
         hatchNode = hatch
     }
 
-    // 40pt spacing stays under the ~50pt jump height
+    // 52pt spacing stays under the ~65pt jump height
     private func buildPlatforms() {
         platformsNode?.removeFromParent()
 
@@ -289,7 +287,7 @@ final class LevelScene: SKScene {
 
         let keyY = keyPosition.y
         let width: CGFloat = 70
-        var y = boxBottomY + 40
+        var y = boxBottomY + 52
         var i = 0
         while y < keyY - 35 {
             let cx = i % 2 == 0 ? size.width - 75 : size.width - 160
@@ -306,7 +304,7 @@ final class LevelScene: SKScene {
             body.categoryBitMask = Cat.ground
             line.physicsBody = body
             node.addChild(line)
-            y += 40
+            y += 52
             i += 1
         }
 
@@ -413,11 +411,9 @@ final class LevelScene: SKScene {
         // catches any resize the events missed before a wrong frame can show
         if size != lastLayoutSize {
             relayout()
-            respawnCube()
         }
 
-        // look one frame ahead, cap velocity so the cube arrives flush at the wall
-        // instead of penetrating and getting pushed back, which was the jitter
+        // look one frame ahead, cap velocity
         let dt: CGFloat = 1.0 / 60.0
         let halfW: CGFloat = 14
         let wallMin = edgeInset + halfW
@@ -431,8 +427,10 @@ final class LevelScene: SKScene {
         }
         body.velocity.dx = vx
 
-        // raycast under both bottom corners, grounding via contact events wont
-        // work because the border is one body so wall contact keeps it alive
+        // terminal velocity so long falls cant tunnel through thin edges
+        if body.velocity.dy < -1400 { body.velocity.dy = -1400 }
+
+        // raycast under both bottom corners
         var grounded = false
         if body.velocity.dy <= 20 {
             for ox in [-halfW + 1, halfW - 1] {
@@ -477,12 +475,17 @@ final class LevelScene: SKScene {
             onFellThrough?(player.position.x / size.width)
         }
         if player.position.y < boxBottomY - 140 {
-            respawnCube()
+            if hasFallenThrough {
+                // completed level parks its cube beside the open gate
+                player.position = CGPoint(x: size.width * 0.25, y: boxBottomY + 20)
+                body.velocity = .zero
+            } else {
+                respawnCube()
+            }
         }
     }
 
-    // runs after the physics step so whatever we set here is what renders,
-    // enforcing wall and arc constraints before any frame is drawn
+    // runs after the physics step
     override func didSimulatePhysics() {
         guard let body = player?.physicsBody, !hasFallenThrough else { return }
         let halfW: CGFloat = 14
