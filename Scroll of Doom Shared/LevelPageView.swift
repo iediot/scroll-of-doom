@@ -8,9 +8,15 @@ struct GameTabBar: View {
 
     let gateUnlocked: Bool
     let dashEnabled: Bool
+    let dashReady: Bool
+    let wingsEnabled: Bool
+    let jumpReady: Bool
+    let airJumpReady: Bool
     let onMove: (CGFloat) -> Void
     let onJump: () -> Void
     let onDash: () -> Void
+
+    private static let dimmed = Color(white: 0.45)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,19 +24,12 @@ struct GameTabBar: View {
                 .fill(.white.opacity(0.15))
                 .frame(height: 0.5)
             HStack(spacing: 0) {
-                barHoldItem(icon: "arrowtriangle.left.fill", direction: -1)
-                barHoldItem(icon: "arrowtriangle.right.fill", direction: 1)
+                barHoldItem(rotation: .degrees(-90), direction: -1)
+                barHoldItem(rotation: .degrees(90), direction: 1)
                 columnDivider
                 createGate
                 columnDivider
-                // gray until the dash powerup is collected
-                barItem(icon: "chevron.right.2",
-                        tint: dashEnabled ? .white : Color(white: 0.45))
-                    .overlay(
-                        TouchCatcher { down in
-                            if down, dashEnabled { onDash() }
-                        }
-                    )
+                dashItem
                 jumpItem
             }
             .frame(maxHeight: .infinity)
@@ -41,36 +40,61 @@ struct GameTabBar: View {
         .background(Color.black)
     }
 
-    private func barHoldItem(icon: String, direction: CGFloat) -> some View {
-        barItem(icon: icon)
-            .overlay(
-                TouchCatcher { down in
-                    onMove(down ? direction : 0)
-                }
-            )
+    private func barHoldItem(rotation: Angle, direction: CGFloat) -> some View {
+        PressableItem(onPress: { down in onMove(down ? direction : 0) }) {
+            RoundedTriangle(cornerRadius: 6)
+                .fill(.white)
+                .frame(width: 30, height: 30)
+                .rotationEffect(rotation)
+        }
     }
 
+    // fully grays while locked or recharging, back triangle sits rightmost
+    private var dashItem: some View {
+        let lit = dashEnabled && dashReady
+        return PressableItem(onPress: { down in if down, dashEnabled { onDash() } }) {
+            ZStack {
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(lit ? Color.white : Self.dimmed)
+                    .frame(width: 25, height: 25)
+                    .rotationEffect(.degrees(90))
+                    .offset(x: 7)
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(.black)
+                    .frame(width: 25, height: 25)
+                    .rotationEffect(.degrees(90))
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(lit ? Color.white : Self.dimmed)
+                    .frame(width: 25, height: 25)
+                    .rotationEffect(.degrees(90))
+                    .offset(x: -7)
+            }
+        }
+    }
+
+    // stacked triangles show jump charges, back one is the double jump
     private var jumpItem: some View {
-        barItem(icon: "arrowtriangle.up.fill")
-            .overlay(
-                TouchCatcher { down in
-                    if down { onJump() }
-                }
-            )
+        PressableItem(onPress: { down in if down { onJump() } }) {
+            ZStack {
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(wingsEnabled && airJumpReady ? Color.white : Self.dimmed)
+                    .frame(width: 25, height: 25)
+                    .offset(y: -7)
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(.black)
+                    .frame(width: 25, height: 25)
+                RoundedTriangle(cornerRadius: 5)
+                    .fill(jumpReady ? Color.white : Self.dimmed)
+                    .frame(width: 25, height: 25)
+                    .offset(y: 7)
+            }
+        }
     }
 
     private var columnDivider: some View {
         Rectangle()
             .fill(.white.opacity(0.15))
             .frame(width: 0.5)
-    }
-
-    private func barItem(icon: String, tint: Color = .white) -> some View {
-        Image(systemName: icon)
-            .font(.system(size: 28))
-            .foregroundStyle(tint)
-            .frame(maxWidth: .infinity, minHeight: 62)
-            .contentShape(Rectangle())
     }
 
     private var createGate: some View {
@@ -165,7 +189,16 @@ struct LevelPageView: View {
         "@level%dfanpage", "@lvl%d.official", "@level%d_leaks",
         "@level%dposting", "@lvl.%d.daily", "@level%d.core", "@levels.w.%d",
         "@level%dcam", "@thelevel%darchive", "@level%d.diaries",
-        "@level%dupdates", "@its.lvl%d.fr", "@level%dfinale"
+        "@level%dupdates", "@its.lvl%d.fr", "@level%d.mood",
+        "@level%dgrind", "@lvl%d.haze", "@level%d.era", "@level%dcheck",
+        "@lowkey.level%d", "@level%d.rizz", "@level%dslays", "@level%d_gaming",
+        "@level%dcorner", "@level%d.pov", "@notlevel%d", "@level%d.irl",
+        "@level%dtherapy", "@level%d.whisperss", "@level%dcontent",
+        "@level%d.unfiltered", "@level%d_speedruns", "@level%dtok",
+        "@level%d.aesthetic", "@level%dvibes", "@level%d.4k",
+        "@certified.level%d", "@level%denjoyer", "@level%d.dump",
+        "@level%dtutorials", "@level%d.soft", "@level%d_edits",
+        "@level%dloreee", "@delulu.level%d", "@level%dfinale"
     ]
 
     private static let blurbPatterns = [
@@ -188,6 +221,36 @@ struct LevelPageView: View {
         "grwm to beat this level 🎀",
         "Day 40. Still here. Nothing has changed.",
         "Level %d exists. Thats it. Thats the post.",
+        "am i delulu for thinking i can beat this first try",
+        "caught in 4k falling through the gate 📸",
+        "First time posting here. Be nice.",
+        "entering my level %d era ✨",
+        "There is something peaceful about a room with one exit.",
+        "no because why is this level actually hard",
+        "Filmed this on my lunch break. Enjoy.",
+        "rating this level a solid 6-7",
+        "Does anyone know who built these rooms? Asking seriously.",
+        "Fun fact: the gate only opens for a full heart.",
+        "My grandson showed me how to post this. What a lovely little room.",
+        "me vs the level (the level is winning)",
+        "The lighting in here is actually insane.",
+        "canon event, do not interfere 🕯️",
+        "the way i gasped when the gate opened",
+        "level said youre not leaving and meant it",
+        "A quiet place. I come here to think.",
+        "not the heart spawning all the way down there 💀",
+        "bet you cant beat this without the wings",
+        "I measured the jump. Its exactly one cube too far.",
+        "sound on for this one 🔇",
+        "someone said this level is mid. couldnt be me.",
+        "replaying this instead of going to therapy",
+        "the fall is lowkey therapeutic",
+        "Documenting every level until they shut this app down.",
+        "W level or L level? comments below 👇",
+        "slight inconvenience and i WILL restart",
+        "That jump was personal.",
+        "lore drop: the cube has always been here",
+        "if you see this youre legally required to finish the level",
         "Season finale. Everything ends here."
     ]
 
@@ -287,6 +350,62 @@ struct LevelPageView: View {
         case 1_000...:     return String(format: "%.1fK", Double(n) / 1_000)
         default:           return "\(n)"
         }
+    }
+}
+
+// squeezes while held for press feedback
+private struct PressableItem<Content: View>: View {
+    let onPress: (Bool) -> Void
+    @ViewBuilder let content: Content
+
+    @State private var pressed = false
+
+    var body: some View {
+        content
+            .scaleEffect(pressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.12), value: pressed)
+            .frame(maxWidth: .infinity, minHeight: 62)
+            .contentShape(Rectangle())
+            .overlay(
+                TouchCatcher { down in
+                    pressed = down
+                    onPress(down)
+                }
+            )
+    }
+}
+
+private struct RoundedTriangle: Shape {
+    var cornerRadius: CGFloat = 10
+
+    func path(in rect: CGRect) -> Path {
+        let w = min(rect.width, rect.height)
+        let h = w * sqrt(3) / 2
+        let top         = CGPoint(x: rect.midX,       y: rect.midY - h / 2)
+        let bottomRight = CGPoint(x: rect.midX + w/2, y: rect.midY + h / 2)
+        let bottomLeft  = CGPoint(x: rect.midX - w/2, y: rect.midY + h / 2)
+        let pts = [top, bottomRight, bottomLeft]
+
+        var path = Path()
+        for i in 0..<3 {
+            let curr = pts[i]
+            let prev = pts[(i + 2) % 3]
+            let next = pts[(i + 1) % 3]
+            let toPrev = unit(from: curr, to: prev)
+            let toNext = unit(from: curr, to: next)
+            let start = CGPoint(x: curr.x + toPrev.x * cornerRadius, y: curr.y + toPrev.y * cornerRadius)
+            let end   = CGPoint(x: curr.x + toNext.x * cornerRadius, y: curr.y + toNext.y * cornerRadius)
+            if i == 0 { path.move(to: start) } else { path.addLine(to: start) }
+            path.addQuadCurve(to: end, control: curr)
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func unit(from a: CGPoint, to b: CGPoint) -> CGPoint {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = max(hypot(dx, dy), 0.0001)
+        return CGPoint(x: dx / len, y: dy / len)
     }
 }
 

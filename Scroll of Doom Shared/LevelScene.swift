@@ -35,6 +35,8 @@ final class LevelScene: SKScene {
     var onCollectPowerup: ((Powerup) -> Void)?
     var onHatchOpened: (() -> Void)?
     var onBossDelivered: (() -> Void)?
+    var onJumpStateChanged: ((Bool, Bool) -> Void)?
+    var onDashStateChanged: ((Bool) -> Void)?
 
     private var player: SKShapeNode!
     private var border: SKShapeNode?
@@ -52,7 +54,7 @@ final class LevelScene: SKScene {
     private var boxMidX: CGFloat = 0
     private var cornerR: CGFloat = 0
 
-    private let dashSpeed: CGFloat = 720
+    private let dashSpeed: CGFloat = 480
     private let dashDuration: TimeInterval = 0.16
     private let dashCooldown: TimeInterval = 0.45
     private var dashEndTime: TimeInterval = -1
@@ -60,6 +62,8 @@ final class LevelScene: SKScene {
     private var dashDirection: CGFloat = 1
     private var lastFacing: CGFloat = 1
     private var bossDelivered = false
+    private var lastJumpState = (first: true, second: false)
+    private var lastDashReady = true
     private var moveDirection: CGFloat = 0
     private var lastGroundedTime: TimeInterval = -1
     private var jumpRequestedTime: TimeInterval = -1
@@ -454,6 +458,19 @@ final class LevelScene: SKScene {
                 jumpRequestedTime = -1
                 lastGroundedTime = -1
             }
+        }
+
+        let jumpState = (first: sceneTime - lastGroundedTime <= coyoteTime,
+                         second: extraJumps > 0 && airJumpsUsed < extraJumps)
+        if jumpState != lastJumpState {
+            lastJumpState = jumpState
+            onJumpStateChanged?(jumpState.first, jumpState.second)
+        }
+
+        let dashReady = sceneTime >= dashReadyTime
+        if dashReady != lastDashReady {
+            lastDashReady = dashReady
+            onDashStateChanged?(dashReady)
         }
 
         if hasKey, !hatchUnlocked {

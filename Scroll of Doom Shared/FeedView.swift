@@ -57,6 +57,9 @@ struct FeedView: View {
     @State private var menuLeft = false
     @State private var gateUnlocked = false
     @State private var runPowerups: Set<Powerup> = []
+    @State private var jumpReady = true
+    @State private var airJumpReady = false
+    @State private var dashReady = true
 
     private static let screenSpring = Animation.spring(response: 0.32, dampingFraction: 0.88)
     // ios app open depth feel
@@ -483,6 +486,15 @@ struct FeedView: View {
         for (i, scene) in built.enumerated() {
             scene.onFellThrough = { xFrac in advance(from: i, entryFrac: xFrac) }
             scene.onHatchOpened = { if currentLevel == i { gateUnlocked = true } }
+            scene.onJumpStateChanged = { first, second in
+                if currentLevel == i {
+                    jumpReady = first
+                    airJumpReady = second
+                }
+            }
+            scene.onDashStateChanged = { ready in
+                if currentLevel == i { dashReady = ready }
+            }
             // powerups persist for the whole run
             scene.onCollectPowerup = { p in
                 runPowerups.insert(p)
@@ -514,6 +526,10 @@ struct FeedView: View {
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
                        dashEnabled: runPowerups.contains(.dash),
+                       dashReady: dashReady,
+                       wingsEnabled: runPowerups.contains(.doubleJump),
+                       jumpReady: jumpReady,
+                       airJumpReady: airJumpReady,
                        onMove: { dir in
                            heldDirection = dir
                            scenes[currentLevel].setMove(dir)

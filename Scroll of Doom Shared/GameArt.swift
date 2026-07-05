@@ -42,10 +42,49 @@ enum GameArt {
     static func icon(for powerup: Powerup) -> UIImage {
         switch powerup {
         case .doubleJump: return wingsImage()
-        case .dash: return symbolImage("chevron.right.2", pointSize: 26,
-                                       canvas: CGSize(width: 44, height: 36),
-                                       color: .white)
+        case .dash: return dashImage()
         }
+    }
+
+    // three staggered right triangles matching the tab bar dash icon
+    static func dashImage() -> UIImage {
+        let canvas = CGSize(width: 52, height: 34)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: canvas, format: format)
+        return renderer.image { _ in
+            for (dx, color) in [(7.0, UIColor.white),
+                                (0.0, UIColor.black),
+                                (-7.0, UIColor.white)] {
+                color.setFill()
+                roundedRightTriangle(center: CGPoint(x: 26 + dx, y: 17),
+                                     base: 25, cornerRadius: 5).fill()
+            }
+        }
+    }
+
+    private static func roundedRightTriangle(center: CGPoint, base: CGFloat,
+                                             cornerRadius r: CGFloat) -> UIBezierPath {
+        let h = base * sqrt(3) / 2
+        let pts = [CGPoint(x: center.x + h / 2, y: center.y),
+                   CGPoint(x: center.x - h / 2, y: center.y + base / 2),
+                   CGPoint(x: center.x - h / 2, y: center.y - base / 2)]
+        func unit(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len = max(hypot(dx, dy), 0.0001)
+            return CGPoint(x: dx / len, y: dy / len)
+        }
+        let path = UIBezierPath()
+        for i in 0..<3 {
+            let curr = pts[i], prev = pts[(i + 2) % 3], next = pts[(i + 1) % 3]
+            let tp = unit(curr, prev), tn = unit(curr, next)
+            let s = CGPoint(x: curr.x + tp.x * r, y: curr.y + tp.y * r)
+            let e = CGPoint(x: curr.x + tn.x * r, y: curr.y + tn.y * r)
+            if i == 0 { path.move(to: s) } else { path.addLine(to: s) }
+            path.addQuadCurve(to: e, controlPoint: curr)
+        }
+        path.close()
+        return path
     }
 
     static func wingsImage() -> UIImage {
