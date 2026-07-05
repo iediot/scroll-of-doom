@@ -7,17 +7,25 @@ struct SaveSlot: Codable {
     var lastPlayed = Date()
 }
 
+private struct UnsaveRectKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
+}
+
 enum SaveStore {
     private static let key = "saveSlots"
 
-    static func load() -> [SaveSlot?] {
+    static func load() -> [SaveSlot] {
         guard let data = UserDefaults.standard.data(forKey: key),
-              let slots = try? JSONDecoder().decode([SaveSlot?].self, from: data),
-              slots.count == 3 else { return [nil, nil, nil] }
+              let slots = try? JSONDecoder().decode([SaveSlot].self, from: data)
+        else { return [] }
         return slots
     }
 
-    static func save(_ slots: [SaveSlot?]) {
+    static func save(_ slots: [SaveSlot]) {
         if let data = try? JSONEncoder().encode(slots) {
             UserDefaults.standard.set(data, forKey: key)
         }
@@ -30,38 +38,66 @@ struct FeedView: View {
     private static let adLevels: Set<Int> = [7]
 
     @State private var scenes: [LevelScene]?
-    @State private var currentLevel: Int? = 0
+    @State private var currentLevel = 0
+    @State private var scrollOffset: CGFloat = 0
     @State private var heldDirection: CGFloat = 0
     @State private var openApp: String?
     @State private var loading = false
     @State private var showGame = false
     @State private var screenSize: CGSize = .zero
-    @State private var slots: [SaveSlot?] = SaveStore.load()
+    @State private var slots: [SaveSlot] = SaveStore.load()
     @State private var activeSlot: Int?
     @State private var choosingSlot = false
+    @State private var unsaveIndex: Int?
+    @State private var pressedIndex: Int?
+    @State private var menuRect: CGRect = .zero
+    @State private var menuLeft = false
+    @State private var gateUnlocked = false
+
+    private static let screenSpring = Animation.spring(response: 0.32, dampingFraction: 0.88)
+    // ios app open depth feel
+    private static let screenIn = AnyTransition.scale(scale: 0.92).combined(with: .opacity)
+    private static let screenOut = AnyTransition.scale(scale: 1.08).combined(with: .opacity)
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // the game stays mounted invisibly behind the menu so spritekit
-                // and metal warm up before play is ever pressed
+                // prewarm so first transitions dont hitch
+                Group {
+                    slotScreen
+                    appScreen("settings")
+                    loadingScreen
+                }
+                .opacity(0.01)
+                .allowsHitTesting(false)
+
+                // game warms up hidden behind the menu
                 if let scenes {
                     feed(scenes)
                         .opacity(showGame ? 1 : 0)
+                        .scaleEffect(showGame ? 1 : 1.05)
                         .allowsHitTesting(showGame)
                 }
                 if !showGame {
                     if loading {
                         loadingScreen
+                            .transition(Self.screenIn)
                     } else if choosingSlot {
                         slotScreen
+                            .transition(Self.screenIn)
                     } else if let openApp {
                         appScreen(openApp)
+                            .transition(Self.screenIn)
                     } else {
                         homeScreen(size: geo.size)
+                            .transition(Self.screenOut)
                     }
                 }
             }
+            .animation(Self.screenSpring, value: showGame)
+            .animation(Self.screenSpring, value: loading)
+            .animation(Self.screenSpring, value: choosingSlot)
+            .animation(Self.screenSpring, value: openApp)
             .onAppear {
                 screenSize = geo.size
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -93,10 +129,17 @@ struct FeedView: View {
         start(size: size)
     }
 
-    // mimics the tiktok saved page, saves shown as video thumbnails
+    // tiktok saved page, saves as video thumbnails
+    private static let haptic = UIImpactFeedbackGenerator(style: .medium)
+
     private var slotScreen: some View {
         ZStack(alignment: .topLeading) {
             Color.black
+            if unsaveIndex != nil {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismissUnsave() }
+            }
             VStack(spacing: 0) {
                 Text("Saved")
                     .font(.headline).bold()
@@ -128,13 +171,34 @@ struct FeedView: View {
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3),
                           spacing: 2) {
-                    ForEach(0..<3, id: \.self) { i in
-                        Button {
-                            chooseSlot(i)
-                        } label: {
-                            slotCard(i)
-                        }
-                        .buttonStyle(.plain)
+                    // one new save tile always follows the last save
+                    ForEach(0..<(slots.count + 1), id: \.self) { i in
+                        slotCard(i)
+                            .scaleEffect(pressedIndex == i ? 0.92 : 1)
+                            .animation(.easeOut(duration: 0.12), value: pressedIndex)
+                            .onTapGesture {
+                                if unsaveIndex != nil {
+                                    dismissUnsave()
+                                } else {
+                                    chooseSlot(i)
+                                }
+                            }
+                            .onLongPressGesture(minimumDuration: 0.22) {
+                                if i < slots.count {
+                                    Self.haptic.impactOccurred()
+                                    unsaveIndex = i
+                                }
+                            } onPressingChanged: { pressing in
+                                pressedIndex = pressing ? i : nil
+                            }
+                            .background(
+                                GeometryReader { g in
+                                    Color.clear.preference(
+                                        key: UnsaveRectKey.self,
+                                        value: unsaveIndex == i
+                                            ? g.frame(in: .named("saved")) : .zero)
+                                }
+                            )
                     }
                 }
                 .padding(.top, 18)
@@ -152,13 +216,57 @@ struct FeedView: View {
                     .padding(24)
             }
             .padding(.top, 40)
+
+            // always mounted, scales out of the pressed save
+            unsaveMenu(unsaveIndex ?? 0)
+                .scaleEffect(unsaveIndex != nil ? 1 : 0.12,
+                             anchor: UnitPoint(x: menuLeft ? 0.75 : 0.25, y: -0.45))
+                .opacity(unsaveIndex != nil ? 1 : 0)
+                .allowsHitTesting(unsaveIndex != nil)
+                .position(x: menuLeft ? menuRect.maxX - 68 : menuRect.minX + 68,
+                          y: menuRect.maxY + 15)
+                .animation(.spring(response: 0.26, dampingFraction: 0.82),
+                           value: unsaveIndex != nil)
         }
+        .coordinateSpace(name: "saved")
+        .onPreferenceChange(UnsaveRectKey.self) { rect in
+            if rect != .zero {
+                menuRect = rect
+                menuLeft = (unsaveIndex ?? 0) % 3 == 2
+            }
+        }
+        .onAppear { Self.haptic.prepare() }
+    }
+
+    private func unsaveMenu(_ i: Int) -> some View {
+        Button {
+            slots.remove(at: i)
+            SaveStore.save(slots)
+            dismissUnsave()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "bookmark.slash.fill")
+                    .font(.system(size: 14))
+                Text("Unsave")
+                    .font(.footnote).bold()
+            }
+            .foregroundStyle(.white)
+            .frame(width: 120, height: 42)
+            .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.45), radius: 7, y: 3)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dismissUnsave() {
+        unsaveIndex = nil
     }
 
     private func slotCard(_ i: Int) -> some View {
-        ZStack {
+        let slot = i < slots.count ? slots[i] : nil
+        return ZStack {
             Rectangle().fill(Color(white: 0.09))
-            if slots[i] != nil {
+            if slot != nil {
                 // tiny mock of a level as the video cover
                 ZStack(alignment: .bottom) {
                     RoundedRectangle(cornerRadius: 10)
@@ -173,14 +281,14 @@ struct FeedView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "plus")
                         .font(.system(size: 24, weight: .medium))
-                    Text("new game")
+                    Text("New Save")
                         .font(.caption2)
                 }
                 .foregroundStyle(.white.opacity(0.45))
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if let slot = slots[i] {
+            if let slot {
                 HStack(spacing: 4) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 9))
@@ -193,7 +301,7 @@ struct FeedView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if let slot = slots[i], !slot.powerups.isEmpty {
+            if let slot, !slot.powerups.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(Array(slot.powerups), id: \.self) { p in
                         Image(uiImage: GameArt.icon(for: p))
@@ -213,9 +321,15 @@ struct FeedView: View {
     }
 
     private func chooseSlot(_ i: Int) {
-        activeSlot = i
-        let slot = slots[i] ?? SaveSlot()
-        slots[i] = slot
+        let slot: SaveSlot
+        if i < slots.count {
+            slot = slots[i]
+            activeSlot = i
+        } else {
+            slot = SaveSlot()
+            slots.append(slot)
+            activeSlot = slots.count - 1
+        }
         SaveStore.save(slots)
 
         if scenes != nil {
@@ -238,22 +352,28 @@ struct FeedView: View {
         if slot.powerups.contains(.doubleJump) {
             for s in scenes { s.extraJumps = 1 }
         }
-        // the preloaded cube has been idling, drop it in fresh from the top
-        scenes[level].enterFromTop(atXFraction: 0.5)
+        scenes[level].prepareEntry(atXFraction: 0.5)
+
         currentLevel = level
+        scrollOffset = 0
+        gateUnlocked = false
         loading = false
-        choosingSlot = false
-        showGame = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            choosingSlot = false
+            showGame = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            scenes[level].beginEntry()
+        }
     }
 
     private func saveProgress() {
-        guard let a = activeSlot, var slot = slots[a] else { return }
-        if let level = currentLevel { slot.level = level }
+        guard let a = activeSlot, a < slots.count else { return }
+        slots[a].level = currentLevel
         if scenes?.first?.extraJumps ?? 0 > 0 {
-            slot.powerups.insert(.doubleJump)
+            slots[a].powerups.insert(.doubleJump)
         }
-        slot.lastPlayed = Date()
-        slots[a] = slot
+        slots[a].lastPlayed = Date()
         SaveStore.save(slots)
     }
 
@@ -263,11 +383,14 @@ struct FeedView: View {
         choosingSlot = false
         activeSlot = nil
         heldDirection = 0
-        currentLevel = 0
-        scenes = nil
-        // rebuild fresh scenes warm behind the menu for the next run
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            preload(size: screenSize)
+        // reset only after the feed unmounts
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            scenes = nil
+            currentLevel = 0
+            scrollOffset = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                preload(size: screenSize)
+            }
         }
     }
 
@@ -345,11 +468,12 @@ struct FeedView: View {
             let s = LevelScene(size: size)
             s.levelIndex = i
             s.isAdLevel = Self.adLevels.contains(i)
-            s.bottomInset = LevelPageView.barHeight
+            s.bottomInset = GameTabBar.height
             return s
         }
         for (i, scene) in built.enumerated() {
             scene.onFellThrough = { xFrac in advance(from: i, entryFrac: xFrac) }
+            scene.onHatchOpened = { if currentLevel == i { gateUnlocked = true } }
             // powerups persist for the whole run
             scene.onCollectWings = {
                 for s in built { s.extraJumps = 1 }
@@ -373,34 +497,40 @@ struct FeedView: View {
             }
             .padding(.top, 54)
         }
+        // outside the scroll so it never moves
+        .overlay(alignment: .bottom) {
+            GameTabBar(gateUnlocked: gateUnlocked,
+                       onMove: { dir in
+                           heldDirection = dir
+                           scenes[currentLevel].setMove(dir)
+                       },
+                       onJump: {
+                           scenes[currentLevel].jump()
+                       })
+        }
     }
 
+    // current and next page always mounted so the scroll never hits a
+    // first render, the offset animates and the window slides after
     private func feedScroll(_ scenes: [LevelScene]) -> some View {
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                ForEach(0..<Self.levelCount, id: \.self) { index in
+        GeometryReader { geo in
+            let h = geo.size.height
+            ZStack(alignment: .top) {
+                ForEach(visiblePages, id: \.self) { index in
                     LevelPageView(levelIndex: index,
                                   displayLevel: Self.displayLevel(for: index),
                                   isAd: Self.adLevels.contains(index),
-                                  scene: scenes[index],
-                                  onMove: { dir in
-                                      heldDirection = dir
-                                      if let i = currentLevel { scenes[i].setMove(dir) }
-                                  },
-                                  onJump: {
-                                      if let i = currentLevel { scenes[i].jump() }
-                                  })
-                        .containerRelativeFrame([.horizontal, .vertical])
-                        .id(index)
+                                  scene: scenes[index])
+                        .frame(width: geo.size.width, height: h)
+                        .offset(y: scrollOffset + CGFloat(index - currentLevel) * h)
                 }
             }
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $currentLevel)
-        .scrollDisabled(true)
-        .scrollIndicators(.hidden)
         .ignoresSafeArea()
+    }
+
+    private var visiblePages: [Int] {
+        currentLevel + 1 < Self.levelCount ? [currentLevel, currentLevel + 1] : [currentLevel]
     }
 
     // ads and future boss levels dont count toward the shown level number
@@ -410,11 +540,17 @@ struct FeedView: View {
 
     private func advance(from index: Int, entryFrac: CGFloat) {
         guard let scenes, index + 1 < Self.levelCount else { return }
-        scenes[index + 1].enterFromTop(atXFraction: entryFrac)
+        scenes[index + 1].prepareEntry(atXFraction: entryFrac)
         scenes[index].setMove(0)
         scenes[index + 1].setMove(heldDirection)
+        gateUnlocked = false
         withAnimation(.easeInOut(duration: 0.45)) {
+            scrollOffset = -screenSize.height
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) {
             currentLevel = index + 1
+            scrollOffset = 0
+            scenes[index + 1].beginEntry()
         }
         saveProgress()
     }

@@ -2,43 +2,15 @@
 import SwiftUI
 import SpriteKit
 
-struct LevelPageView: View {
-    let levelIndex: Int
-    // ads and future boss levels dont count toward the shown level number
-    let displayLevel: Int
-    let isAd: Bool
-    let scene: LevelScene
-    // input goes through feedview so a held press carries across level transitions
+// home/search move, create is the gate, profile jumps
+struct GameTabBar: View {
+    static let height: CGFloat = 128
+
+    let gateUnlocked: Bool
     let onMove: (CGFloat) -> Void
     let onJump: () -> Void
 
-    // total bar height including the home indicator strip, the scenes box
-    // floor sits right on top of it so the floor gap lands on the create button
-    static let barHeight: CGFloat = 112
-
-    @State private var keyCollected = false
-    @State private var heartFilled = false
-    @State private var gateUnlocked = false
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black
-            SpriteView(scene: scene, options: [.ignoresSiblingOrder])
-            engagementRail
-            caption
-            tabBar
-        }
-        .ignoresSafeArea()
-        .onAppear {
-            scene.onCollectHeart = { keyCollected = true }
-            scene.onHeartFilled = { heartFilled = true }
-            scene.onHatchOpened = { gateUnlocked = true }
-        }
-    }
-
-    // tiktok tab bar, home and search are the move controls, create is the
-    // gate lock and profile is the jump
-    private var tabBar: some View {
         VStack(spacing: 0) {
             Rectangle()
                 .fill(.white.opacity(0.15))
@@ -46,15 +18,18 @@ struct LevelPageView: View {
             HStack(spacing: 0) {
                 barHoldItem(icon: "arrowtriangle.left.fill", direction: -1)
                 barHoldItem(icon: "arrowtriangle.right.fill", direction: 1)
+                columnDivider
                 createGate
-                barItem(icon: "message")
+                columnDivider
+                // future dash ability, grayed out for now
+                barItem(icon: "chevron.right.2", tint: Color(white: 0.45))
                 jumpItem
             }
-            .padding(.top, 14)
-            .padding(.horizontal, 34)
-            Spacer()
+            .frame(maxHeight: .infinity)
+            .padding(.bottom, 8)
+            .padding(.horizontal, 10)
         }
-        .frame(height: Self.barHeight)
+        .frame(height: Self.height)
         .background(Color.black)
     }
 
@@ -76,35 +51,66 @@ struct LevelPageView: View {
             )
     }
 
-    private func barItem(icon: String) -> some View {
+    private var columnDivider: some View {
+        Rectangle()
+            .fill(.white.opacity(0.15))
+            .frame(width: 0.5)
+    }
+
+    private func barItem(icon: String, tint: Color = .white) -> some View {
         Image(systemName: icon)
-            .font(.system(size: 31))
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 54)
+            .font(.system(size: 28))
+            .foregroundStyle(tint)
+            .frame(maxWidth: .infinity, minHeight: 62)
             .contentShape(Rectangle())
     }
 
     private var createGate: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 9)
                 .fill(Color(white: 0.55))
-                .frame(width: 50, height: 36)
-                .offset(x: -6)
-            RoundedRectangle(cornerRadius: 10)
+                .frame(width: 44, height: 31)
+                .offset(x: -5)
+            RoundedRectangle(cornerRadius: 9)
                 .fill(Color(white: 0.3))
-                .frame(width: 50, height: 36)
-                .offset(x: 6)
-            RoundedRectangle(cornerRadius: 10)
+                .frame(width: 44, height: 31)
+                .offset(x: 5)
+            RoundedRectangle(cornerRadius: 9)
                 .fill(.white)
-                .frame(width: 50, height: 36)
-            // locked shows a cross, unlocking spins it 45 degrees into the plus
+                .frame(width: 44, height: 31)
+            // cross spins into the plus on unlock
             Image(systemName: "plus")
-                .font(.system(size: 20, weight: .bold))
+                .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(.black)
                 .rotationEffect(.degrees(gateUnlocked ? 0 : 45))
                 .animation(.spring(response: 0.35, dampingFraction: 0.55), value: gateUnlocked)
         }
-        .frame(maxWidth: .infinity, minHeight: 54)
+        .frame(maxWidth: .infinity, minHeight: 62)
+    }
+}
+
+struct LevelPageView: View {
+    let levelIndex: Int
+    // ads and future boss levels dont count toward the shown level number
+    let displayLevel: Int
+    let isAd: Bool
+    let scene: LevelScene
+
+    @State private var keyCollected = false
+    @State private var heartFilled = false
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black
+            SpriteView(scene: scene, options: [.ignoresSiblingOrder])
+            engagementRail
+            caption
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            scene.onCollectHeart = { keyCollected = true }
+            scene.onHeartFilled = { heartFilled = true }
+        }
     }
 
     private static let usernamePatterns = [
@@ -115,7 +121,7 @@ struct LevelPageView: View {
     ]
 
     private static let blurbPatterns = [
-        "ts level pmo sm icl 🌹",
+        "ts level pmo sm icl 🥀",
         "day 2 of posting my level until someone beats it",
         "no caption needed.",
         "We explored this abandoned level. What we found was unsettling.",
@@ -165,10 +171,11 @@ struct LevelPageView: View {
                 }
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.5), radius: 4)
+                .frame(maxWidth: 265, alignment: .leading)
                 Spacer()
             }
             .padding(.leading, 30)
-            .padding(.bottom, Self.barHeight + 30)
+            .padding(.bottom, GameTabBar.height + 30)
         }
     }
 
@@ -183,7 +190,7 @@ struct LevelPageView: View {
                 EngagementButton(icon: "ellipsis", label: "", tint: .white)
             }
             .padding(.trailing, 12)
-            .padding(.bottom, 193)
+            .padding(.bottom, 193 + GameTabBar.height * 0.75)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -214,8 +221,7 @@ struct LevelPageView: View {
     }
 }
 
-// uikit touches instead of swiftui gestures, swiftui is single-touch and adds
-// lag, raw touches make every button independent and instant
+// raw uikit touches, swiftui gestures are single touch and laggy
 private struct TouchCatcher: UIViewRepresentable {
     let onPress: (Bool) -> Void
 

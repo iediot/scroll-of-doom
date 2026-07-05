@@ -10,7 +10,8 @@ final class LevelScene: SKScene {
     private let coyoteTime: TimeInterval = 0.08
     private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
-    private let openingWidth: CGFloat = 46
+    // matches the create button column in the tab bar
+    private var openingWidth: CGFloat { (size.width - 20) / 5 }
     private let openingFrac: CGFloat = 0.5
 
     private enum Cat {
@@ -23,7 +24,7 @@ final class LevelScene: SKScene {
     var levelIndex = 0
     var isAdLevel = false
     var extraJumps = 0
-    // the tab bar covers the bottom strip, the box floor sits on top of it
+    // box floor sits on top of the tab bar
     var bottomInset: CGFloat = 0
     var onFellThrough: ((CGFloat) -> Void)?
     var onCollectHeart: (() -> Void)?
@@ -56,7 +57,7 @@ final class LevelScene: SKScene {
     private var pendingEntryFrac: CGFloat?
     private var lastLayoutSize: CGSize = .zero
 
-    // reads the real iphone display corner radius, falls back to a safe default
+    // real display corner radius with fallback
     private var displayCornerRadius: CGFloat {
         if let screen = view?.window?.windowScene?.screen,
            let r = screen.value(forKey: "_displayCornerRadius") as? CGFloat, r > 0 {
@@ -87,7 +88,7 @@ final class LevelScene: SKScene {
         lastLayoutSize = size
     }
 
-    private let keyTopOffset: CGFloat = 515
+    private let keyTopOffset: CGFloat = 419
     private let keyRightInset: CGFloat = 35
 
     private var keyPosition: CGPoint {
@@ -118,7 +119,7 @@ final class LevelScene: SKScene {
         body.categoryBitMask = Cat.player
         body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings
         body.collisionBitMask = Cat.ground
-        // sweeps movement path each frame so cube cant slip past the boundary
+        // sweep collision so the cube cant slip through
         body.usesPreciseCollisionDetection = true
         player.physicsBody = body
         addChild(player)
@@ -153,7 +154,7 @@ final class LevelScene: SKScene {
         heartSlot = slot
     }
 
-    // tiktok like pop, shrink then overshoot then settle
+    // tiktok like pop
     private func fillHeartSlot() {
         guard let slot = heartSlot else { return }
         let filled = SKSpriteNode(texture: GameArt.heartTexture(filled: true))
@@ -175,8 +176,7 @@ final class LevelScene: SKScene {
     private func layoutBox() {
         border?.removeFromParent()
 
-        // floor sits flush on the tab bar so the bottom is flat, no arcs there,
-        // only the top keeps the display corners
+        // flat bottom on the bar, arcs only on top
         let rect = CGRect(x: edgeInset, y: bottomInset,
                           width: size.width - edgeInset * 2,
                           height: size.height - edgeInset - bottomInset)
@@ -206,8 +206,9 @@ final class LevelScene: SKScene {
         path.addLine(to: CGPoint(x: minX, y: minY))
         path.addLine(to: CGPoint(x: openingStartX, y: minY))
 
+        // physics stays, visually hidden
         let shape = SKShapeNode(path: path)
-        shape.strokeColor = .white
+        shape.strokeColor = .black
         shape.lineWidth = 3
         shape.lineCap = .round
         shape.lineJoin = .round
@@ -244,7 +245,7 @@ final class LevelScene: SKScene {
         line.lineCap = .round
         hatch.addChild(line)
 
-        // lock state shows on the tab bars create button instead of in scene
+        // lock shows on the create button
 
         let body = SKPhysicsBody(edgeFrom: CGPoint(x: startX, y: y),
                                  to: CGPoint(x: endX, y: y))
@@ -342,6 +343,8 @@ final class LevelScene: SKScene {
         pendingEntryFrac = nil
         player.position = CGPoint(x: x, y: boxTopY - 40)
         player.physicsBody?.velocity = .zero
+        player.physicsBody?.isDynamic = true
+        player.isHidden = false
         hasFallenThrough = false
     }
 
@@ -351,16 +354,22 @@ final class LevelScene: SKScene {
         jumpRequestedTime = sceneTime
     }
 
-    func enterFromTop(atXFraction frac: CGFloat) {
+    // cube waits frozen at the top until the scroll settles, then drops
+    func prepareEntry(atXFraction frac: CGFloat) {
         pendingEntryFrac = frac
         if boxTopY > 0 { respawnCube() }
+        player?.physicsBody?.isDynamic = false
+    }
+
+    func beginEntry() {
+        player?.physicsBody?.isDynamic = true
     }
 
     override func update(_ currentTime: TimeInterval) {
         guard let body = player?.physicsBody else { return }
         sceneTime = currentTime
 
-        // catches any resize the events missed before a wrong frame can show
+        // catches resizes the events missed
         if size != lastLayoutSize {
             relayout()
         }
@@ -428,8 +437,10 @@ final class LevelScene: SKScene {
         }
         if player.position.y < boxBottomY - 140 {
             if hasFallenThrough {
-                // completed level parks its cube beside the open gate
-                player.position = CGPoint(x: size.width * 0.25, y: boxBottomY + 20)
+                // park hidden after completion
+                player.isHidden = true
+                body.isDynamic = false
+                player.position = CGPoint(x: boxMidX, y: boxBottomY + 20)
                 body.velocity = .zero
             } else {
                 respawnCube()
