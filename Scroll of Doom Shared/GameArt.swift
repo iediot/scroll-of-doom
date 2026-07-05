@@ -30,6 +30,14 @@ enum GameArt {
         SKTexture(image: wingsImage())
     }
 
+    // the boss counterpart of the heart
+    static func brokenHeartTexture() -> SKTexture {
+        symbolTexture("heart.slash.fill",
+                      pointSize: 28,
+                      canvas: CGSize(width: 40, height: 40),
+                      color: .white)
+    }
+
     static func icon(for powerup: Powerup) -> UIImage {
         switch powerup {
         case .doubleJump: return wingsImage()

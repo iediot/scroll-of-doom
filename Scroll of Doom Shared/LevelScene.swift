@@ -23,6 +23,7 @@ final class LevelScene: SKScene {
 
     var levelIndex = 0
     var isAdLevel = false
+    var isBossLevel = false
     var extraJumps = 0
     // box floor sits on top of the tab bar
     var bottomInset: CGFloat = 0
@@ -31,6 +32,7 @@ final class LevelScene: SKScene {
     var onHeartFilled: (() -> Void)?
     var onCollectWings: (() -> Void)?
     var onHatchOpened: (() -> Void)?
+    var onBossDelivered: (() -> Void)?
 
     private var player: SKShapeNode!
     private var border: SKShapeNode?
@@ -48,6 +50,7 @@ final class LevelScene: SKScene {
     private var boxMidX: CGFloat = 0
     private var cornerR: CGFloat = 0
 
+    private var bossDelivered = false
     private var moveDirection: CGFloat = 0
     private var lastGroundedTime: TimeInterval = -1
     private var jumpRequestedTime: TimeInterval = -1
@@ -99,10 +102,16 @@ final class LevelScene: SKScene {
         CGPoint(x: 60, y: boxBottomY + 60)
     }
 
+    // the ellipsis in the rail, boss levels deliver the broken heart there
+    private var bossSlotPosition: CGPoint {
+        CGPoint(x: size.width - 35, y: 304)
+    }
+
     private func buildLevel() {
         removeAllChildren()
         hasKey = false
         hatchUnlocked = false
+        bossDelivered = false
 
         let cube = CGSize(width: 30, height: 30)
         player = SKShapeNode(rectOf: cube, cornerRadius: 7)
@@ -295,7 +304,9 @@ final class LevelScene: SKScene {
 
         let key = SKNode()
         key.zPosition = 8
-        key.addChild(SKSpriteNode(texture: GameArt.heartTexture(filled: true)))
+        key.addChild(SKSpriteNode(texture: isBossLevel
+            ? GameArt.brokenHeartTexture()
+            : GameArt.heartTexture(filled: true)))
         key.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 20)
@@ -423,11 +434,22 @@ final class LevelScene: SKScene {
         }
 
         if hasKey, !hatchUnlocked {
-            let dx = player.position.x - keyPosition.x
-            let dy = player.position.y - keyPosition.y
+            let target = isBossLevel ? bossSlotPosition : keyPosition
+            let dx = player.position.x - target.x
+            let dy = player.position.y - target.y
             if dx * dx + dy * dy < 70 * 70 {
-                fillHeartSlot()
-                openHatch()
+                if isBossLevel {
+                    if !bossDelivered {
+                        bossDelivered = true
+                        onBossDelivered?()
+                        // gate waits for the popup to fill its slash heart
+                        run(.sequence([.wait(forDuration: 0.55),
+                                       .run { [weak self] in self?.openHatch() }]))
+                    }
+                } else {
+                    fillHeartSlot()
+                    openHatch()
+                }
             }
         }
 

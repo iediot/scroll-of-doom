@@ -34,8 +34,11 @@ enum SaveStore {
 
 struct FeedView: View {
 
-    private static let levelCount = 15
-    private static let adLevels: Set<Int> = [7]
+    // 10 normal, boss, 10 normal, wings ad, then 10 normal, boss, 10 normal,
+    // boss, 10 normal
+    private static let levelCount = 54
+    private static let adLevels: Set<Int> = [21]
+    private static let bossLevels: Set<Int> = [10, 32, 43]
 
     @State private var scenes: [LevelScene]?
     @State private var currentLevel = 0
@@ -147,25 +150,20 @@ struct FeedView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 62)
 
-                HStack(spacing: 30) {
-                    VStack(spacing: 7) {
-                        Text("Videos")
-                            .font(.subheadline).bold()
-                            .foregroundStyle(.white)
-                        Rectangle().fill(.white).frame(width: 34, height: 2)
-                    }
-                    VStack(spacing: 7) {
-                        Text("Sounds")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.4))
-                        Color.clear.frame(width: 34, height: 2)
-                    }
-                    VStack(spacing: 7) {
-                        Text("Posts")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.4))
-                        Color.clear.frame(width: 34, height: 2)
-                    }
+                // active tab just brightens, no underline
+                HStack(spacing: 26) {
+                    Text("Posts")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(.white)
+                    Text("Collections")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.4))
+                    Text("Sounds")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.4))
+                    Text("Effects")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.4))
                 }
                 .padding(.top, 20)
 
@@ -468,6 +466,7 @@ struct FeedView: View {
             let s = LevelScene(size: size)
             s.levelIndex = i
             s.isAdLevel = Self.adLevels.contains(i)
+            s.isBossLevel = Self.bossLevels.contains(i)
             s.bottomInset = GameTabBar.height
             return s
         }
@@ -520,6 +519,7 @@ struct FeedView: View {
                     LevelPageView(levelIndex: index,
                                   displayLevel: Self.displayLevel(for: index),
                                   isAd: Self.adLevels.contains(index),
+                                  isBoss: Self.bossLevels.contains(index),
                                   scene: scenes[index])
                         .frame(width: geo.size.width, height: h)
                         .offset(y: scrollOffset + CGFloat(index - currentLevel) * h)
@@ -533,16 +533,22 @@ struct FeedView: View {
         currentLevel + 1 < Self.levelCount ? [currentLevel, currentLevel + 1] : [currentLevel]
     }
 
-    // ads and future boss levels dont count toward the shown level number
+    // ads and bosses dont count toward the shown level number
     private static func displayLevel(for index: Int) -> Int {
-        index + 1 - adLevels.filter { $0 < index }.count
+        if bossLevels.contains(index) { return bossNumber(for: index) }
+        return index + 1
+            - adLevels.filter { $0 < index }.count
+            - bossLevels.filter { $0 < index }.count
+    }
+
+    private static func bossNumber(for index: Int) -> Int {
+        bossLevels.filter { $0 <= index }.count
     }
 
     private func advance(from index: Int, entryFrac: CGFloat) {
         guard let scenes, index + 1 < Self.levelCount else { return }
         scenes[index + 1].prepareEntry(atXFraction: entryFrac)
         scenes[index].setMove(0)
-        scenes[index + 1].setMove(heldDirection)
         gateUnlocked = false
         withAnimation(.easeInOut(duration: 0.45)) {
             scrollOffset = -screenSize.height
@@ -550,6 +556,9 @@ struct FeedView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.46) {
             currentLevel = index + 1
             scrollOffset = 0
+            // hand the held direction over now, a release during the scroll
+            // would otherwise be eaten by the old level
+            scenes[index + 1].setMove(heldDirection)
             scenes[index + 1].beginEntry()
         }
         saveProgress()

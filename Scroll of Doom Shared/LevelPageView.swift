@@ -91,13 +91,17 @@ struct GameTabBar: View {
 
 struct LevelPageView: View {
     let levelIndex: Int
-    // ads and future boss levels dont count toward the shown level number
+    // ads and bosses dont count toward the level number, bosses carry the
+    // boss number here instead
     let displayLevel: Int
     let isAd: Bool
+    let isBoss: Bool
     let scene: LevelScene
 
     @State private var keyCollected = false
     @State private var heartFilled = false
+    @State private var bossPromptShown = false
+    @State private var bossSlotFilled = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -105,19 +109,53 @@ struct LevelPageView: View {
             SpriteView(scene: scene, options: [.ignoresSiblingOrder])
             engagementRail
             caption
+            if bossPromptShown {
+                bossPrompt
+                    .padding(.trailing, 58)
+                    .padding(.bottom, 270)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: .bottomTrailing)
+                    .transition(.scale(scale: 0.3, anchor: .trailing)
+                        .combined(with: .opacity))
+            }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: bossPromptShown)
         .ignoresSafeArea()
         .onAppear {
             scene.onCollectHeart = { keyCollected = true }
             scene.onHeartFilled = { heartFilled = true }
+            scene.onBossDelivered = {
+                bossPromptShown = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    bossSlotFilled = true
+                }
+            }
         }
+    }
+
+    // the boss slot, pops out of the ellipsis like tiktoks menu
+    private var bossPrompt: some View {
+        HStack(spacing: 8) {
+            Image(systemName: bossSlotFilled ? "heart.slash.fill" : "heart.slash")
+                .font(.system(size: 16))
+                .symbolEffect(.bounce, value: bossSlotFilled)
+            Text("Not interested")
+                .font(.footnote).bold()
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.45), radius: 7, y: 3)
     }
 
     private static let usernamePatterns = [
         "@user.level%d", "@lvl%d_real", "@its.level.%d", "@level%dofficial",
         "@justlevel%dthings", "@level%d_clips", "@level%d.fyp",
         "@level%dfanpage", "@lvl%d.official", "@level%d_leaks",
-        "@level%dposting", "@lvl.%d.daily", "@level%d.core", "@levels.w.%d"
+        "@level%dposting", "@lvl.%d.daily", "@level%d.core", "@levels.w.%d",
+        "@level%dcam", "@thelevel%darchive", "@level%d.diaries",
+        "@level%dupdates", "@its.lvl%d.fr", "@level%dfinale"
     ]
 
     private static let blurbPatterns = [
@@ -134,17 +172,25 @@ struct LevelPageView: View {
         "speedrun attempt, any% (gone wrong)",
         "how it feels to finally leave this place",
         "Level %d tour, part 3. The walls are still white.",
+        "posting this before the level gets taken down",
+        "not me getting stuck here for an hour 😭",
+        "the level economy is crazy rn",
+        "grwm to beat this level 🎀",
+        "Day 40. Still here. Nothing has changed.",
+        "Level %d exists. Thats it. Thats the post.",
         "Season finale. Everything ends here."
     ]
 
     private var username: String {
         if isAd { return "@wingscorp.official" }
+        if isBoss { return "@boss\(displayLevel)" }
         let pattern = Self.usernamePatterns[(displayLevel - 1) % Self.usernamePatterns.count]
         return String(format: pattern, displayLevel)
     }
 
     private var blurb: String {
         if isAd { return "Wings™ — fly through levels. Get yours today 🪽" }
+        if isBoss { return "you werent supposed to scroll this far." }
         let pattern = Self.blurbPatterns[(displayLevel - 1) % Self.blurbPatterns.count]
         return String(format: pattern, displayLevel)
     }
@@ -204,7 +250,8 @@ struct LevelPageView: View {
     }
 
     private static let likeSeeds = [903, 617, 842, 476, 758, 531, 689, 289,
-                                    724, 448, 866, 592, 337, 781, 653]
+                                    724, 448, 866, 592, 337, 781, 653, 415,
+                                    508, 772, 264, 691, 843, 379]
     private var likeCount: String {
         let seed = Self.likeSeeds[levelIndex % Self.likeSeeds.count]
         return formatCount(seed - (keyCollected ? 1 : 0) + (heartFilled ? 1 : 0))
