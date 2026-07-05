@@ -34,10 +34,10 @@ enum SaveStore {
 
 struct FeedView: View {
 
-    // 10 normal, boss, 10 normal, wings ad, then 10 normal, boss, 10 normal,
-    // boss, 10 normal
-    private static let levelCount = 54
-    private static let adLevels: Set<Int> = [21]
+    // 10 normal, boss, 10 normal, dash ad, then 10 normal, boss, 10 normal,
+    // boss, 10 normal, wings ad
+    private static let levelCount = 55
+    private static let adLevels: [Int: Powerup] = [21: .dash, 54: .doubleJump]
     private static let bossLevels: Set<Int> = [10, 32, 43]
 
     @State private var scenes: [LevelScene]?
@@ -56,6 +56,7 @@ struct FeedView: View {
     @State private var menuRect: CGRect = .zero
     @State private var menuLeft = false
     @State private var gateUnlocked = false
+    @State private var runPowerups: Set<Powerup> = []
 
     private static let screenSpring = Animation.spring(response: 0.32, dampingFraction: 0.88)
     // ios app open depth feel
@@ -290,8 +291,13 @@ struct FeedView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 9))
-                    Text("lvl \(Self.displayLevel(for: slot.level))")
+                    Text(LevelPageView.username(
+                        displayLevel: Self.displayLevel(for: slot.level),
+                        adPowerup: Self.adLevels[slot.level],
+                        isBoss: Self.bossLevels.contains(slot.level)))
                         .font(.caption2).bold()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 2)
@@ -347,8 +353,12 @@ struct FeedView: View {
     private func enterGame(_ slot: SaveSlot) {
         guard let scenes else { return }
         let level = min(max(slot.level, 0), Self.levelCount - 1)
+        runPowerups = slot.powerups
         if slot.powerups.contains(.doubleJump) {
             for s in scenes { s.extraJumps = 1 }
+        }
+        if slot.powerups.contains(.dash) {
+            for s in scenes { s.hasDash = true }
         }
         scenes[level].prepareEntry(atXFraction: 0.5)
 
@@ -368,9 +378,7 @@ struct FeedView: View {
     private func saveProgress() {
         guard let a = activeSlot, a < slots.count else { return }
         slots[a].level = currentLevel
-        if scenes?.first?.extraJumps ?? 0 > 0 {
-            slots[a].powerups.insert(.doubleJump)
-        }
+        slots[a].powerups = runPowerups
         slots[a].lastPlayed = Date()
         SaveStore.save(slots)
     }
@@ -381,6 +389,7 @@ struct FeedView: View {
         choosingSlot = false
         activeSlot = nil
         heldDirection = 0
+        runPowerups = []
         // reset only after the feed unmounts
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             scenes = nil
@@ -465,7 +474,8 @@ struct FeedView: View {
         let built = (0..<Self.levelCount).map { i -> LevelScene in
             let s = LevelScene(size: size)
             s.levelIndex = i
-            s.isAdLevel = Self.adLevels.contains(i)
+            s.isAdLevel = Self.adLevels[i] != nil
+            s.adPowerup = Self.adLevels[i] ?? .doubleJump
             s.isBossLevel = Self.bossLevels.contains(i)
             s.bottomInset = GameTabBar.height
             return s
@@ -474,8 +484,12 @@ struct FeedView: View {
             scene.onFellThrough = { xFrac in advance(from: i, entryFrac: xFrac) }
             scene.onHatchOpened = { if currentLevel == i { gateUnlocked = true } }
             // powerups persist for the whole run
-            scene.onCollectWings = {
-                for s in built { s.extraJumps = 1 }
+            scene.onCollectPowerup = { p in
+                runPowerups.insert(p)
+                switch p {
+                case .doubleJump: for s in built { s.extraJumps = 1 }
+                case .dash: for s in built { s.hasDash = true }
+                }
                 saveProgress()
             }
         }
@@ -499,12 +513,16 @@ struct FeedView: View {
         // outside the scroll so it never moves
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
+                       dashEnabled: runPowerups.contains(.dash),
                        onMove: { dir in
                            heldDirection = dir
                            scenes[currentLevel].setMove(dir)
                        },
                        onJump: {
                            scenes[currentLevel].jump()
+                       },
+                       onDash: {
+                           scenes[currentLevel].dash()
                        })
         }
     }
@@ -518,7 +536,7 @@ struct FeedView: View {
                 ForEach(visiblePages, id: \.self) { index in
                     LevelPageView(levelIndex: index,
                                   displayLevel: Self.displayLevel(for: index),
-                                  isAd: Self.adLevels.contains(index),
+                                  adPowerup: Self.adLevels[index],
                                   isBoss: Self.bossLevels.contains(index),
                                   scene: scenes[index])
                         .frame(width: geo.size.width, height: h)
@@ -537,7 +555,7 @@ struct FeedView: View {
     private static func displayLevel(for index: Int) -> Int {
         if bossLevels.contains(index) { return bossNumber(for: index) }
         return index + 1
-            - adLevels.filter { $0 < index }.count
+            - adLevels.keys.filter { $0 < index }.count
             - bossLevels.filter { $0 < index }.count
     }
 

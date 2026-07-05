@@ -24,13 +24,15 @@ final class LevelScene: SKScene {
     var levelIndex = 0
     var isAdLevel = false
     var isBossLevel = false
+    var adPowerup: Powerup = .doubleJump
     var extraJumps = 0
+    var hasDash = false
     // box floor sits on top of the tab bar
     var bottomInset: CGFloat = 0
     var onFellThrough: ((CGFloat) -> Void)?
     var onCollectHeart: (() -> Void)?
     var onHeartFilled: (() -> Void)?
-    var onCollectWings: (() -> Void)?
+    var onCollectPowerup: ((Powerup) -> Void)?
     var onHatchOpened: (() -> Void)?
     var onBossDelivered: (() -> Void)?
 
@@ -50,6 +52,13 @@ final class LevelScene: SKScene {
     private var boxMidX: CGFloat = 0
     private var cornerR: CGFloat = 0
 
+    private let dashSpeed: CGFloat = 720
+    private let dashDuration: TimeInterval = 0.16
+    private let dashCooldown: TimeInterval = 0.45
+    private var dashEndTime: TimeInterval = -1
+    private var dashReadyTime: TimeInterval = -1
+    private var dashDirection: CGFloat = 1
+    private var lastFacing: CGFloat = 1
     private var bossDelivered = false
     private var moveDirection: CGFloat = 0
     private var lastGroundedTime: TimeInterval = -1
@@ -324,7 +333,7 @@ final class LevelScene: SKScene {
 
         let node = SKNode()
         node.zPosition = 8
-        node.addChild(SKSpriteNode(texture: GameArt.wingsTexture()))
+        node.addChild(SKSpriteNode(texture: GameArt.powerupTexture(adPowerup)))
         node.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 22)
@@ -359,7 +368,18 @@ final class LevelScene: SKScene {
         hasFallenThrough = false
     }
 
-    func setMove(_ direction: CGFloat) { moveDirection = direction }
+    func setMove(_ direction: CGFloat) {
+        moveDirection = direction
+        if direction != 0 { lastFacing = direction }
+    }
+
+    // short horizontal burst toward the held or last faced direction
+    func dash() {
+        guard hasDash, sceneTime >= dashReadyTime else { return }
+        dashDirection = moveDirection != 0 ? moveDirection : lastFacing
+        dashEndTime = sceneTime + dashDuration
+        dashReadyTime = sceneTime + dashCooldown
+    }
 
     func jump() {
         jumpRequestedTime = sceneTime
@@ -390,7 +410,8 @@ final class LevelScene: SKScene {
         let halfW: CGFloat = 14
         let wallMin = edgeInset + halfW
         let wallMax = size.width - edgeInset - halfW
-        var vx = moveDirection * moveSpeed
+        let dashing = sceneTime < dashEndTime
+        var vx = dashing ? dashDirection * dashSpeed : moveDirection * moveSpeed
         let predictedX = player.position.x + vx * dt
         if predictedX > wallMax {
             vx = max(0, (wallMax - player.position.x) / dt)
@@ -398,6 +419,8 @@ final class LevelScene: SKScene {
             vx = min(0, (wallMin - player.position.x) / dt)
         }
         body.velocity.dx = vx
+        // dashes hold their height
+        if dashing { body.velocity.dy = 0 }
 
         // terminal velocity so long falls cant tunnel through thin edges
         if body.velocity.dy < -1400 { body.velocity.dy = -1400 }
@@ -504,7 +527,7 @@ extension LevelScene: SKPhysicsContactDelegate {
         case Cat.wings:
             if let node = other.node, node == wings {
                 wings = nil
-                onCollectWings?()
+                onCollectPowerup?(adPowerup)
                 openHatch()
                 node.run(.sequence([
                     .group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),

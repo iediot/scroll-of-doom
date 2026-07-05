@@ -7,8 +7,10 @@ struct GameTabBar: View {
     static let height: CGFloat = 128
 
     let gateUnlocked: Bool
+    let dashEnabled: Bool
     let onMove: (CGFloat) -> Void
     let onJump: () -> Void
+    let onDash: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,8 +23,14 @@ struct GameTabBar: View {
                 columnDivider
                 createGate
                 columnDivider
-                // future dash ability, grayed out for now
-                barItem(icon: "chevron.right.2", tint: Color(white: 0.45))
+                // gray until the dash powerup is collected
+                barItem(icon: "chevron.right.2",
+                        tint: dashEnabled ? .white : Color(white: 0.45))
+                    .overlay(
+                        TouchCatcher { down in
+                            if down, dashEnabled { onDash() }
+                        }
+                    )
                 jumpItem
             }
             .frame(maxHeight: .infinity)
@@ -94,9 +102,11 @@ struct LevelPageView: View {
     // ads and bosses dont count toward the level number, bosses carry the
     // boss number here instead
     let displayLevel: Int
-    let isAd: Bool
+    let adPowerup: Powerup?
     let isBoss: Bool
     let scene: LevelScene
+
+    private var isAd: Bool { adPowerup != nil }
 
     @State private var keyCollected = false
     @State private var heartFilled = false
@@ -181,15 +191,27 @@ struct LevelPageView: View {
         "Season finale. Everything ends here."
     ]
 
-    private var username: String {
-        if isAd { return "@wingscorp.official" }
+    static func username(displayLevel: Int, adPowerup: Powerup?, isBoss: Bool) -> String {
+        switch adPowerup {
+        case .doubleJump: return "@wingscorp.official"
+        case .dash: return "@dashlabs.official"
+        case nil: break
+        }
         if isBoss { return "@boss\(displayLevel)" }
-        let pattern = Self.usernamePatterns[(displayLevel - 1) % Self.usernamePatterns.count]
+        let pattern = usernamePatterns[(displayLevel - 1) % usernamePatterns.count]
         return String(format: pattern, displayLevel)
     }
 
+    private var username: String {
+        Self.username(displayLevel: displayLevel, adPowerup: adPowerup, isBoss: isBoss)
+    }
+
     private var blurb: String {
-        if isAd { return "Wings™ — fly through levels. Get yours today 🪽" }
+        switch adPowerup {
+        case .doubleJump: return "Wings™ — fly through levels. Get yours today 🪽"
+        case .dash: return "Dash™ — get there faster. Try it now 💨"
+        case nil: break
+        }
         if isBoss { return "you werent supposed to scroll this far." }
         let pattern = Self.blurbPatterns[(displayLevel - 1) % Self.blurbPatterns.count]
         return String(format: pattern, displayLevel)

@@ -4,6 +4,7 @@ import UIKit
 // every powerup lives here, new ones get a case and an icon
 enum Powerup: String, Codable, CaseIterable {
     case doubleJump
+    case dash
 }
 
 // all placeholder art in one spot, swap for real textures later
@@ -26,8 +27,8 @@ enum GameArt {
         return SKTexture(image: flat)
     }
 
-    static func wingsTexture() -> SKTexture {
-        SKTexture(image: wingsImage())
+    static func powerupTexture(_ p: Powerup) -> SKTexture {
+        SKTexture(image: icon(for: p))
     }
 
     // the boss counterpart of the heart
@@ -41,6 +42,9 @@ enum GameArt {
     static func icon(for powerup: Powerup) -> UIImage {
         switch powerup {
         case .doubleJump: return wingsImage()
+        case .dash: return symbolImage("chevron.right.2", pointSize: 26,
+                                       canvas: CGSize(width: 44, height: 36),
+                                       color: .white)
         }
     }
 
@@ -70,10 +74,15 @@ enum GameArt {
 
     private static func symbolTexture(_ name: String, pointSize: CGFloat,
                                       canvas: CGSize, color: UIColor) -> SKTexture {
+        SKTexture(image: symbolImage(name, pointSize: pointSize, canvas: canvas, color: color))
+    }
+
+    private static func symbolImage(_ name: String, pointSize: CGFloat,
+                                    canvas: CGSize, color: UIColor) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: canvas, format: format)
-        let img = renderer.image { _ in
+        return renderer.image { _ in
             let cfg = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
             if let sym = UIImage(systemName: name, withConfiguration: cfg)?
                 .withTintColor(color, renderingMode: .alwaysOriginal) {
@@ -82,6 +91,5 @@ enum GameArt {
                                     width: sym.size.width, height: sym.size.height))
             }
         }
-        return SKTexture(image: img)
     }
 }
