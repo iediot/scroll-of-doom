@@ -171,42 +171,44 @@ struct FeedView: View {
                 }
                 .padding(.top, 20)
 
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3),
-                          spacing: 2) {
-                    // one new save tile always follows the last save
-                    ForEach(0..<(slots.count + 1), id: \.self) { i in
-                        slotCard(i)
-                            .scaleEffect(pressedIndex == i ? 0.92 : 1)
-                            .animation(.easeOut(duration: 0.12), value: pressedIndex)
-                            .onTapGesture {
-                                if unsaveIndex != nil {
-                                    dismissUnsave()
-                                } else {
-                                    chooseSlot(i)
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3),
+                              spacing: 2) {
+                        // one new save tile always follows the last save
+                        ForEach(0..<(slots.count + 1), id: \.self) { i in
+                            slotCard(i)
+                                .scaleEffect(pressedIndex == i ? 0.92 : 1)
+                                .animation(.easeOut(duration: 0.12), value: pressedIndex)
+                                .onTapGesture {
+                                    if unsaveIndex != nil {
+                                        dismissUnsave()
+                                    } else {
+                                        chooseSlot(i)
+                                    }
                                 }
-                            }
-                            .onLongPressGesture(minimumDuration: 0.22) {
-                                if i < slots.count {
-                                    Self.haptic.impactOccurred()
-                                    unsaveIndex = i
+                                .onLongPressGesture(minimumDuration: 0.22) {
+                                    if i < slots.count {
+                                        Self.haptic.impactOccurred()
+                                        unsaveIndex = i
+                                    }
+                                } onPressingChanged: { pressing in
+                                    pressedIndex = pressing ? i : nil
                                 }
-                            } onPressingChanged: { pressing in
-                                pressedIndex = pressing ? i : nil
-                            }
-                            .background(
-                                GeometryReader { g in
-                                    Color.clear.preference(
-                                        key: UnsaveRectKey.self,
-                                        value: unsaveIndex == i
-                                            ? g.frame(in: .named("saved")) : .zero)
-                                }
-                            )
+                                .background(
+                                    GeometryReader { g in
+                                        Color.clear.preference(
+                                            key: UnsaveRectKey.self,
+                                            value: unsaveIndex == i
+                                                ? g.frame(in: .named("saved")) : .zero)
+                                    }
+                                )
+                        }
                     }
+                    .padding(.top, 18)
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 40)
                 }
-                .padding(.top, 18)
-                .padding(.horizontal, 2)
-
-                Spacer()
+                .scrollIndicators(.hidden)
             }
 
             Button {
@@ -415,7 +417,7 @@ struct FeedView: View {
                     AppIcon(art: .settings, label: "Settings") { openApp = "settings" }
                     AppIcon(art: .tips, label: "Tips") { openApp = "tips" }
                     AppIcon(art: .music, label: "Music") { openApp = "music" }
-                    AppIcon(art: .play, label: "Scroll of Doom") { choosingSlot = true }
+                    AppIcon(art: .play, label: "PLAY") { choosingSlot = true }
                     AppIcon(art: .messages, label: "Messages")
                     AppIcon(art: .camera, label: "Camera")
                     AppIcon(art: .photos, label: "Photos")
@@ -432,26 +434,26 @@ struct FeedView: View {
         }
     }
 
-    // medium widget, 4x2
+    // medium widget, 4x2, in a real liquid glass frame
     private var widget: some View {
         Image("widget")
             .resizable()
             .aspectRatio(2.13, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 24))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .padding(7)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var dock: some View {
-        RoundedRectangle(cornerRadius: 30)
-            .fill(.white.opacity(0.1))
-            .frame(height: 92)
-            .overlay(
-                HStack(spacing: 26) {
-                    AppIcon(art: .phone)
-                    AppIcon(art: .safari)
-                    AppIcon(art: .mail)
-                    AppIcon(art: .facetime)
-                }
-            )
+        HStack(spacing: 26) {
+            AppIcon(art: .phone)
+            AppIcon(art: .safari)
+            AppIcon(art: .mail)
+            AppIcon(art: .facetime)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 92)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 30))
     }
 
     private func appScreen(_ name: String) -> some View {
@@ -600,7 +602,7 @@ struct FeedView: View {
 }
 
 private struct AppIcon: View {
-    enum Art {
+    enum Art: String {
         case settings, tips, messages, camera, photos, clock, calendar,
              music, maps, phone, safari, mail, facetime, play
     }
@@ -615,6 +617,17 @@ private struct AppIcon: View {
                 artwork
                     .frame(width: 62, height: 62)
                     .clipShape(RoundedRectangle(cornerRadius: 15))
+                    // liquid glass sheen and rim
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 15)
+                            .fill(LinearGradient(
+                                colors: [.white.opacity(0.25), .white.opacity(0.05), .clear],
+                                startPoint: .topLeading, endPoint: .bottom))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 15)
+                            .strokeBorder(.white.opacity(0.25), lineWidth: 0.8)
+                    )
                 if let label {
                     Text(label)
                         .font(.caption)
@@ -627,153 +640,31 @@ private struct AppIcon: View {
         .buttonStyle(.plain)
     }
 
-    private func gradient(_ top: Double, _ bottom: Double) -> LinearGradient {
-        LinearGradient(colors: [Color(white: top), Color(white: bottom)],
-                       startPoint: .top, endPoint: .bottom)
-    }
-
     @ViewBuilder private var artwork: some View {
         switch art {
-        case .settings:
-            ZStack {
-                gradient(0.35, 0.15)
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(Color(white: 0.8))
-            }
-        case .tips:
-            ZStack {
-                gradient(0.75, 0.5)
-                Image(systemName: "lightbulb.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.white)
-            }
-        case .messages:
-            ZStack {
-                gradient(0.6, 0.35)
-                Image(systemName: "bubble.left.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.white)
-            }
-        case .camera:
-            ZStack {
-                gradient(0.85, 0.65)
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(Color(white: 0.15))
-            }
-        case .photos:
-            ZStack {
-                Color.white
-                // overlapping petals darken where they cross, like the real flower
-                ForEach(0..<8, id: \.self) { i in
-                    Ellipse()
-                        .fill(Color(white: 0.3 + Double(i) * 0.07).opacity(0.65))
-                        .frame(width: 16, height: 30)
-                        .offset(y: -12)
-                        .rotationEffect(.degrees(Double(i) * 45))
-                        .blendMode(.multiply)
-                }
-            }
-        case .clock:
-            ZStack {
-                Color.black
-                Circle().fill(.white).padding(5)
-                ForEach(0..<12, id: \.self) { i in
-                    Capsule()
-                        .fill(.black)
-                        .frame(width: 1.5, height: i % 3 == 0 ? 6 : 3.5)
-                        .offset(y: -21)
-                        .rotationEffect(.degrees(Double(i) * 30))
-                }
-                Capsule().fill(.black).frame(width: 2.5, height: 15)
-                    .offset(y: -7.5)
-                    .rotationEffect(.degrees(305))
-                Capsule().fill(.black).frame(width: 2, height: 21)
-                    .offset(y: -10.5)
-                    .rotationEffect(.degrees(70))
-                Circle().fill(.black).frame(width: 4, height: 4)
-            }
         case .calendar:
+            // shows todays actual date like the real icon
             ZStack {
                 Color.white
                 VStack(spacing: -2) {
-                    Text("FRI")
+                    Text(Date().formatted(.dateTime.weekday(.abbreviated)))
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color(white: 0.45))
-                    Text("4")
+                    Text(Date().formatted(.dateTime.day()))
                         .font(.system(size: 32, weight: .light))
                         .foregroundStyle(.black)
                 }
             }
-        case .music:
-            ZStack {
-                gradient(0.55, 0.25)
-                Image(systemName: "music.note")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.white)
-            }
-        case .maps:
-            ZStack {
-                Color(white: 0.9)
-                // side streets, freeway, and the blue-dot stand-in
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color(white: 0.75))
-                    .frame(width: 80, height: 4)
-                    .rotationEffect(.degrees(-32))
-                    .offset(y: -14)
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color(white: 0.75))
-                    .frame(width: 80, height: 4)
-                    .rotationEffect(.degrees(58))
-                    .offset(x: -14)
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(white: 0.45))
-                    .frame(width: 84, height: 9)
-                    .rotationEffect(.degrees(-32))
-                    .offset(y: 4)
-                Circle()
-                    .fill(.white)
-                    .frame(width: 15, height: 15)
-                    .overlay(Circle().fill(.black).frame(width: 9, height: 9))
-                    .offset(x: 14, y: -12)
-            }
-        case .phone:
-            ZStack {
-                gradient(0.6, 0.35)
-                Image(systemName: "phone.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white)
-            }
-        case .safari:
-            ZStack {
-                gradient(0.85, 0.6)
-                Circle().fill(.white).padding(6)
-                Image(systemName: "safari.fill")
-                    .font(.system(size: 50))
-                    .foregroundStyle(Color(white: 0.25))
-            }
-        case .mail:
-            ZStack {
-                gradient(0.55, 0.3)
-                Image(systemName: "envelope.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white)
-            }
-        case .facetime:
-            ZStack {
-                gradient(0.65, 0.4)
-                Image(systemName: "video.fill")
-                    .font(.system(size: 26))
-                    .foregroundStyle(.white)
-            }
         case .play:
-            ZStack {
-                Color(white: 0.85)
-                Image(systemName: "play.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.black)
-            }
+            Image(systemName: "play.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.white)
+                .frame(width: 62, height: 62)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 15))
+        default:
+            Image("icon.\(art.rawValue)")
+                .resizable()
+                .scaledToFill()
         }
     }
 }
