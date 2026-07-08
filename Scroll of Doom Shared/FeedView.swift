@@ -63,7 +63,7 @@ struct FeedView: View {
 
     // 10 normal, boss, 10 normal, dash ad, then 10 normal, boss, 10 normal,
     // boss, 10 normal, wings ad
-    private static let levelCount = 55
+    private static let levelCount = 56
     private static let adLevels: [Int: Powerup] = [21: .dash, 54: .doubleJump]
     private static let bossLevels: Set<Int> = [10, 32, 43]
 

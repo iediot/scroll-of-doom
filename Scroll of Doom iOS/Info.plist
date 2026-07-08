@@ -24,5 +24,7 @@
 		<key>UIColorName</key>
 		<string>Black</string>
 	</dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 </dict>
 </plist>

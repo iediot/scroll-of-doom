@@ -36,12 +36,15 @@ final class LevelScene: SKScene {
     var onJumpStateChanged: ((Bool, Bool) -> Void)?
     var onDashStateChanged: ((Bool) -> Void)?
 
+    private let modelSize: CGFloat = 30
+    // small fixed hitbox, centered horizontally and sitting at the models feet
+    private let hitW: CGFloat = 18
+    private let hitH: CGFloat = 22
+
     private var player: SKNode!
-    private var squishBottom: SKNode!   // jump/land scale from the cubes feet
-    private var squishCenter: SKNode!   // dash scale from the cubes middle
+    private var squishBottom: SKNode!   // squishes scale from the cubes feet, purely visual
     private var eyes: [SKShapeNode] = []
     private var descentSpeed: CGFloat = 0
-    private var prevVelY: CGFloat = 0
     private var border: SKShapeNode?
     private var heart: SKNode?
     private var heartSlot: SKNode?
@@ -80,6 +83,7 @@ final class LevelScene: SKScene {
     private var lastGroundedTime: TimeInterval = -1
     private var jumpRequestedTime: TimeInterval = -1
     private var sceneTime: TimeInterval = 0
+    private var lastTime: TimeInterval = 0
     private var airJumpsUsed = 0
     private var hasFallenThrough = false
     private var pendingEntryFrac: CGFloat?
@@ -140,46 +144,32 @@ final class LevelScene: SKScene {
         hatchUnlocked = restore?.hatchOpen ?? false
         bossDelivered = restore?.hatchOpen ?? false
 
-        let cube = CGSize(width: 30, height: 30)
+        let cube = CGSize(width: modelSize, height: modelSize)
         player = SKNode()
         player.zPosition = 10
-
-        let body = SKPhysicsBody(rectangleOf: CGSize(width: cube.width - 2, height: cube.height - 2))
-        body.allowsRotation = false
-        body.restitution = 0
-        body.friction = 0
-        body.linearDamping = 0
-        body.categoryBitMask = Cat.player
-        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings
-        body.collisionBitMask = Cat.ground
-        // sweep collision so the cube cant slip through
-        body.usesPreciseCollisionDetection = true
-        player.physicsBody = body
+        player.physicsBody = makeBody()
         addChild(player)
 
-        // bottom node scales from the cubes feet (jump/land keep it planted),
-        // center node nested inside scales from the middle (dash)
+        // one node that scales from the cubes feet, the physics body follows it
         squishBottom = SKNode()
         squishBottom.position = CGPoint(x: 0, y: -cube.height / 2)
         player.addChild(squishBottom)
 
-        squishCenter = SKNode()
-        squishCenter.position = CGPoint(x: 0, y: cube.height / 2)
-        squishBottom.addChild(squishCenter)
-
-        let visual = SKShapeNode(rectOf: cube, cornerRadius: 7)
+        let visual = SKShapeNode(rect: CGRect(x: -cube.width / 2, y: 0,
+                                              width: cube.width, height: cube.height),
+                                 cornerRadius: 7)
         visual.fillColor = .white
         visual.strokeColor = .white
         visual.lineWidth = 1.5
-        squishCenter.addChild(visual)
+        squishBottom.addChild(visual)
 
         eyes = []
         for ex in [-6.0, 6.0] {
             let eye = SKShapeNode(circleOfRadius: 3)
             eye.fillColor = .black
             eye.strokeColor = .clear
-            eye.position = CGPoint(x: ex, y: 4)
-            squishCenter.addChild(eye)
+            eye.position = CGPoint(x: ex, y: cube.height / 2 + 4)
+            squishBottom.addChild(eye)
             eyes.append(eye)
         }
 
@@ -589,15 +579,29 @@ final class LevelScene: SKScene {
         squishBottom.run(ret, withKey: "squish")
     }
 
-    // center bound stretch for the dash
     private func dashSquish() {
-        guard let squishCenter else { return }
-        squishCenter.removeAction(forKey: "squish")
-        let out = SKAction.group([.scaleX(to: 1.4, duration: 0.06), .scaleY(to: 0.7, duration: 0.06)])
+        guard let squishBottom else { return }
+        squishBottom.removeAction(forKey: "squish")
+        let out = SKAction.group([.scaleX(to: 1.4, duration: 0.06), .scaleY(to: 0.72, duration: 0.06)])
         out.timingMode = .easeOut
         let ret = SKAction.group([.scaleX(to: 1, duration: 0.18), .scaleY(to: 1, duration: 0.18)])
         ret.timingMode = .easeOut
-        squishCenter.run(.sequence([out, ret]), withKey: "squish")
+        squishBottom.run(.sequence([out, ret]), withKey: "squish")
+    }
+
+    // small rectangle whose bottom sits at the models feet, animation independent
+    private func makeBody() -> SKPhysicsBody {
+        let body = SKPhysicsBody(rectangleOf: CGSize(width: hitW, height: hitH),
+                                 center: CGPoint(x: 0, y: -modelSize / 2 + hitH / 2))
+        body.allowsRotation = false
+        body.restitution = 0
+        body.friction = 0
+        body.linearDamping = 0
+        body.categoryBitMask = Cat.player
+        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings
+        body.collisionBitMask = Cat.ground
+        body.usesPreciseCollisionDetection = true
+        return body
     }
 
     func jump() {
@@ -616,7 +620,7 @@ final class LevelScene: SKScene {
     }
 
     override func update(_ currentTime: TimeInterval) {
-        guard let body = player?.physicsBody else { return }
+        guard player != nil else { return }
         sceneTime = currentTime
 
         // catches resizes the events missed
@@ -624,18 +628,16 @@ final class LevelScene: SKScene {
             relayout()
         }
 
-        // kill the collision solvers separating velocity on a hard landing so
-        // the cube never bounces back up
-        if prevVelY < -250, body.velocity.dy > 5, !(sceneTime < dashEndTime) {
-            body.velocity.dy = 0
-        }
-        prevVelY = body.velocity.dy
+        guard let body = player.physicsBody else { return }
 
-        // look one frame ahead, cap velocity
-        let dt: CGFloat = 1.0 / 60.0
-        let halfW: CGFloat = 14
-        let wallMin = edgeInset + halfW
-        let wallMax = size.width - edgeInset - halfW
+        // real frame delta so the look-ahead is right at any refresh rate
+        let dt: CGFloat = lastTime > 0 ? CGFloat(min(currentTime - lastTime, 1.0 / 30.0)) : 1.0 / 60.0
+        lastTime = currentTime
+
+        // look one frame ahead, cap velocity, walls stop the model edge
+        let wallHalf = modelSize / 2
+        let wallMin = edgeInset + wallHalf
+        let wallMax = size.width - edgeInset - wallHalf
         let dashing = sceneTime < dashEndTime
         var vx = dashing ? dashDirection * dashSpeed : moveDirection * moveSpeed
         let predictedX = player.position.x + vx * dt
@@ -654,15 +656,18 @@ final class LevelScene: SKScene {
         // terminal velocity so long falls cant tunnel through thin edges
         if body.velocity.dy < -1400 { body.velocity.dy = -1400 }
 
-        // raycast under both bottom corners
+        // raycast under the hitboxs bottom corners, capture the surface height
         var grounded = false
+        var groundY: CGFloat = 0
         if body.velocity.dy <= 20 {
-            for ox in [-halfW + 1, halfW - 1] {
+            let foot = hitW / 2 - 1
+            for ox in [-foot, foot] {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
-                let end = CGPoint(x: start.x, y: start.y - halfW - 6)
-                physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
+                let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 6)
+                physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, point, _, stop in
                     if hit.categoryBitMask == Cat.ground {
                         grounded = true
+                        groundY = point.y
                         stop.pointee = true
                     }
                 }
@@ -672,6 +677,15 @@ final class LevelScene: SKScene {
         if grounded {
             lastGroundedTime = sceneTime
             airJumpsUsed = 0
+        }
+        // stick the landing, no bounce and no float, snap the models feet onto
+        // the surface the moment they reach it and kill the downward velocity
+        if grounded, body.velocity.dy <= 0, !dashing {
+            let modelBottom = player.position.y - modelSize / 2
+            if modelBottom <= groundY + 1 {
+                player.position.y = groundY + modelSize / 2
+                body.velocity.dy = 0
+            }
         }
         // track the fastest descent, then squish the frame the ground actually
         // stops it, so the flattened cube sits exactly on the platform
@@ -751,9 +765,9 @@ final class LevelScene: SKScene {
     // runs after the physics step
     override func didSimulatePhysics() {
         guard let body = player?.physicsBody, !hasFallenThrough else { return }
-        let halfW: CGFloat = 14
-        let wallMin = edgeInset + halfW
-        let wallMax = size.width - edgeInset - halfW
+        let wallHalf = modelSize / 2
+        let wallMin = edgeInset + wallHalf
+        let wallMax = size.width - edgeInset - wallHalf
         if player.position.x < wallMin {
             player.position.x = wallMin
             if body.velocity.dx < 0 { body.velocity.dx = 0 }

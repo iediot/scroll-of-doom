@@ -133,7 +133,8 @@ struct LevelPageView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black
-            SpriteView(scene: scene, options: [.ignoresSiblingOrder])
+            SpriteView(scene: scene, preferredFramesPerSecond: 120,
+                       options: [.ignoresSiblingOrder])
             engagementRail
             caption
             if bossPromptShown {
