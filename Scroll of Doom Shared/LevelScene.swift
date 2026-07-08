@@ -36,7 +36,12 @@ final class LevelScene: SKScene {
     var onJumpStateChanged: ((Bool, Bool) -> Void)?
     var onDashStateChanged: ((Bool) -> Void)?
 
-    private var player: SKShapeNode!
+    private var player: SKNode!
+    private var squishBottom: SKNode!   // jump/land scale from the cubes feet
+    private var squishCenter: SKNode!   // dash scale from the cubes middle
+    private var eyes: [SKShapeNode] = []
+    private var descentSpeed: CGFloat = 0
+    private var prevVelY: CGFloat = 0
     private var border: SKShapeNode?
     private var heart: SKNode?
     private var heartSlot: SKNode?
@@ -136,10 +141,7 @@ final class LevelScene: SKScene {
         bossDelivered = restore?.hatchOpen ?? false
 
         let cube = CGSize(width: 30, height: 30)
-        player = SKShapeNode(rectOf: cube, cornerRadius: 7)
-        player.fillColor = .white
-        player.strokeColor = .white
-        player.lineWidth = 1.5
+        player = SKNode()
         player.zPosition = 10
 
         let body = SKPhysicsBody(rectangleOf: CGSize(width: cube.width - 2, height: cube.height - 2))
@@ -155,12 +157,30 @@ final class LevelScene: SKScene {
         player.physicsBody = body
         addChild(player)
 
+        // bottom node scales from the cubes feet (jump/land keep it planted),
+        // center node nested inside scales from the middle (dash)
+        squishBottom = SKNode()
+        squishBottom.position = CGPoint(x: 0, y: -cube.height / 2)
+        player.addChild(squishBottom)
+
+        squishCenter = SKNode()
+        squishCenter.position = CGPoint(x: 0, y: cube.height / 2)
+        squishBottom.addChild(squishCenter)
+
+        let visual = SKShapeNode(rectOf: cube, cornerRadius: 7)
+        visual.fillColor = .white
+        visual.strokeColor = .white
+        visual.lineWidth = 1.5
+        squishCenter.addChild(visual)
+
+        eyes = []
         for ex in [-6.0, 6.0] {
             let eye = SKShapeNode(circleOfRadius: 3)
             eye.fillColor = .black
             eye.strokeColor = .clear
             eye.position = CGPoint(x: ex, y: 4)
-            player.addChild(eye)
+            squishCenter.addChild(eye)
+            eyes.append(eye)
         }
 
         layoutBox()
@@ -484,6 +504,7 @@ final class LevelScene: SKScene {
     func setMove(_ direction: CGFloat) {
         moveDirection = direction
         if direction != 0 { lastFacing = direction }
+        lookEyes(direction)
     }
 
     // short horizontal burst toward the held or last faced direction
@@ -492,6 +513,91 @@ final class LevelScene: SKScene {
         dashDirection = moveDirection != 0 ? moveDirection : lastFacing
         dashEndTime = sceneTime + dashDuration
         dashReadyTime = sceneTime + dashCooldown
+        dashSquish()
+        lookEyes(dashDirection, amount: 3.5)
+    }
+
+    // eyes glance toward the direction of travel
+    private func lookEyes(_ dir: CGFloat, amount: CGFloat = 2.2) {
+        for (i, eye) in eyes.enumerated() {
+            let baseX: CGFloat = i == 0 ? -6 : 6
+            eye.run(.moveTo(x: baseX + dir * amount, duration: 0.1), withKey: "look")
+        }
+    }
+
+    private func spawnParticles(at pos: CGPoint, count: Int, life: TimeInterval = 0.32,
+                                _ vel: (Int) -> CGVector) {
+        for i in 0..<count {
+            let dot = SKShapeNode(circleOfRadius: 1.8)
+            dot.fillColor = .white
+            dot.strokeColor = .clear
+            dot.zPosition = 9
+            dot.position = pos
+            addChild(dot)
+            let v = vel(i)
+            let move = SKAction.moveBy(x: v.dx, y: v.dy, duration: life)
+            move.timingMode = .easeOut
+            dot.run(.sequence([
+                .group([move, .fadeOut(withDuration: life), .scale(to: 0.2, duration: life)]),
+                .removeFromParent()
+            ]))
+        }
+    }
+
+    private func jumpPuff() {
+        guard let player else { return }
+        spawnParticles(at: CGPoint(x: player.position.x, y: player.position.y - 14), count: 5) { _ in
+            CGVector(dx: .random(in: -16...16), dy: .random(in: -20 ... -6))
+        }
+    }
+
+    private func landPuff() {
+        guard let player else { return }
+        spawnParticles(at: CGPoint(x: player.position.x, y: player.position.y - 14), count: 6) { i in
+            let side: CGFloat = i % 2 == 0 ? 1 : -1
+            return CGVector(dx: side * .random(in: 10...26), dy: .random(in: 2...9))
+        }
+    }
+
+    // trails a particle from wherever the cube is each frame of the dash
+    private func dashTrail() {
+        guard let player else { return }
+        spawnParticles(at: player.position, count: 1, life: 0.25) { _ in
+            CGVector(dx: -self.dashDirection * .random(in: 8...18), dy: .random(in: -6...6))
+        }
+    }
+
+    // bottom bound squash and stretch for jump, keyed so it doesnt pile up
+    private func squish(x: CGFloat, y: CGFloat, hold: TimeInterval, back: TimeInterval) {
+        guard let squishBottom else { return }
+        squishBottom.removeAction(forKey: "squish")
+        let out = SKAction.group([.scaleX(to: x, duration: hold), .scaleY(to: y, duration: hold)])
+        out.timingMode = .easeOut
+        let ret = SKAction.group([.scaleX(to: 1, duration: back), .scaleY(to: 1, duration: back)])
+        ret.timingMode = .easeOut
+        squishBottom.run(.sequence([out, ret]), withKey: "squish")
+    }
+
+    // snaps flat the instant it touches down, then springs back, bottom bound
+    private func landSquish() {
+        guard let squishBottom else { return }
+        squishBottom.removeAction(forKey: "squish")
+        squishBottom.xScale = 1.34
+        squishBottom.yScale = 0.64
+        let ret = SKAction.group([.scaleX(to: 1, duration: 0.17), .scaleY(to: 1, duration: 0.17)])
+        ret.timingMode = .easeOut
+        squishBottom.run(ret, withKey: "squish")
+    }
+
+    // center bound stretch for the dash
+    private func dashSquish() {
+        guard let squishCenter else { return }
+        squishCenter.removeAction(forKey: "squish")
+        let out = SKAction.group([.scaleX(to: 1.4, duration: 0.06), .scaleY(to: 0.7, duration: 0.06)])
+        out.timingMode = .easeOut
+        let ret = SKAction.group([.scaleX(to: 1, duration: 0.18), .scaleY(to: 1, duration: 0.18)])
+        ret.timingMode = .easeOut
+        squishCenter.run(.sequence([out, ret]), withKey: "squish")
     }
 
     func jump() {
@@ -518,6 +624,13 @@ final class LevelScene: SKScene {
             relayout()
         }
 
+        // kill the collision solvers separating velocity on a hard landing so
+        // the cube never bounces back up
+        if prevVelY < -250, body.velocity.dy > 5, !(sceneTime < dashEndTime) {
+            body.velocity.dy = 0
+        }
+        prevVelY = body.velocity.dy
+
         // look one frame ahead, cap velocity
         let dt: CGFloat = 1.0 / 60.0
         let halfW: CGFloat = 14
@@ -532,8 +645,11 @@ final class LevelScene: SKScene {
             vx = min(0, (wallMin - player.position.x) / dt)
         }
         body.velocity.dx = vx
-        // dashes hold their height
-        if dashing { body.velocity.dy = 0 }
+        // dashes hold their height and trail particles the whole way
+        if dashing {
+            body.velocity.dy = 0
+            dashTrail()
+        }
 
         // terminal velocity so long falls cant tunnel through thin edges
         if body.velocity.dy < -1400 { body.velocity.dy = -1400 }
@@ -557,6 +673,16 @@ final class LevelScene: SKScene {
             lastGroundedTime = sceneTime
             airJumpsUsed = 0
         }
+        // track the fastest descent, then squish the frame the ground actually
+        // stops it, so the flattened cube sits exactly on the platform
+        if body.velocity.dy < -60 {
+            descentSpeed = min(descentSpeed, body.velocity.dy)
+        }
+        if grounded, descentSpeed < -320, body.velocity.dy > -60 {
+            landSquish()
+            landPuff()
+            descentSpeed = 0
+        }
 
         if jumpRequestedTime >= 0, sceneTime - jumpRequestedTime <= jumpBufferTime {
             let groundJump = sceneTime - lastGroundedTime <= coyoteTime
@@ -564,6 +690,9 @@ final class LevelScene: SKScene {
                 if !groundJump { airJumpsUsed += 1 }
                 body.velocity.dy = 0
                 body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
+                // thin and tall on launch, back to a full cube by the apex
+                squish(x: 0.68, y: 1.42, hold: 0.05, back: 0.12)
+                jumpPuff()
                 jumpRequestedTime = -1
                 lastGroundedTime = -1
             }
