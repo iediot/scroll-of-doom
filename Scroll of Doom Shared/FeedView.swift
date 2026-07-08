@@ -10,7 +10,28 @@ struct SaveSlot: Codable {
     var hasKey = false
     var gateOpen = false
     var pickupTaken = false
+    var thumbnail: Data?
     var lastPlayed = Date()
+}
+
+// the captured render of the level, or a plain cube for saves not yet played
+private struct SaveThumbnail: View {
+    let slot: SaveSlot
+    let isAd: Bool
+    let isBoss: Bool
+    let adPowerup: Powerup?
+
+    var body: some View {
+        if let data = slot.thumbnail, let ui = UIImage(data: data) {
+            Image(uiImage: ui)
+                .resizable()
+                .scaledToFill()
+        } else {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(.white)
+                .frame(width: 13, height: 13)
+        }
+    }
 }
 
 private struct UnsaveRectKey: PreferenceKey {
@@ -276,17 +297,12 @@ struct FeedView: View {
         let slot = i < slots.count ? slots[i] : nil
         return ZStack {
             Rectangle().fill(Color(white: 0.09))
-            if slot != nil {
-                // tiny mock of a level as the video cover
-                ZStack(alignment: .bottom) {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(.white.opacity(0.9), lineWidth: 1.5)
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(.white)
-                        .frame(width: 13, height: 13)
-                        .padding(.bottom, 10)
-                }
-                .padding(12)
+            if let slot {
+                // schematic of the actual level, cube where it was left
+                SaveThumbnail(slot: slot,
+                              isAd: Self.adLevels[slot.level] != nil,
+                              isBoss: Self.bossLevels.contains(slot.level),
+                              adPowerup: Self.adLevels[slot.level])
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "plus")
@@ -408,6 +424,7 @@ struct FeedView: View {
             slots[a].hasKey = s.hasKey
             slots[a].gateOpen = s.hatchOpen
             slots[a].pickupTaken = s.skipPickup
+            slots[a].thumbnail = scene.thumbnailImage()?.pngData()
         }
         slots[a].lastPlayed = Date()
         SaveStore.save(slots)

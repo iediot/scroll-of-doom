@@ -11,8 +11,6 @@ final class LevelScene: SKScene {
     private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
     // matches the create button column in the tab bar
-    private var openingWidth: CGFloat { (size.width - 20) / 5 }
-    private let openingFrac: CGFloat = 0.5
 
     private enum Cat {
         static let player: UInt32 = 0x1 << 0
@@ -229,17 +227,13 @@ final class LevelScene: SKScene {
 
         let minX = rect.minX, maxX = rect.maxX, minY = rect.minY, maxY = rect.maxY
 
-        let openingCenterX = rect.minX + rect.width * openingFrac
-        let openingStartX = openingCenterX - openingWidth / 2
-        let openingEndX = openingCenterX + openingWidth / 2
-
         let cr = max(min(displayCornerRadius - edgeInset, rect.width / 2, rect.height / 2), 0)
         cornerR = cr
         let path = CGMutablePath()
         let quarter = CGFloat.pi / 2
 
-        path.move(to: CGPoint(x: openingEndX, y: minY))
-        path.addLine(to: CGPoint(x: maxX, y: minY))
+        // walls and rounded top only, the full width gate is the floor
+        path.move(to: CGPoint(x: maxX, y: minY))
         path.addLine(to: CGPoint(x: maxX, y: maxY - cr))
         path.addArc(center: CGPoint(x: maxX - cr, y: maxY - cr), radius: cr,
                     startAngle: 0, endAngle: quarter, clockwise: false)
@@ -247,7 +241,6 @@ final class LevelScene: SKScene {
         path.addArc(center: CGPoint(x: minX + cr, y: maxY - cr), radius: cr,
                     startAngle: quarter, endAngle: .pi, clockwise: false)
         path.addLine(to: CGPoint(x: minX, y: minY))
-        path.addLine(to: CGPoint(x: openingStartX, y: minY))
 
         // physics stays, visually hidden
         let shape = SKShapeNode(path: path)
@@ -265,33 +258,31 @@ final class LevelScene: SKScene {
         addChild(shape)
         border = shape
 
-        buildHatch(startX: openingStartX, endX: openingEndX, y: minY)
+        buildHatch(y: minY)
         buildPlatforms()
     }
 
-    private func buildHatch(startX: CGFloat, endX: CGFloat, y: CGFloat) {
+    // the gate spans the whole screen, once open you fall through anywhere
+    private func buildHatch(y: CGFloat) {
         hatchNode?.removeFromParent()
         hatchNode = nil
-        hatchCenter = CGPoint(x: (startX + endX) / 2, y: y)
+        hatchCenter = CGPoint(x: size.width / 2, y: y)
         guard !hatchUnlocked else { return }
 
-        let gray = UIColor(white: 0.45, alpha: 1)
         let hatch = SKNode()
         hatch.zPosition = 6
 
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: startX, y: y))
-        path.addLine(to: CGPoint(x: endX, y: y))
+        path.move(to: CGPoint(x: 0, y: y))
+        path.addLine(to: CGPoint(x: size.width, y: y))
         let line = SKShapeNode(path: path)
-        line.strokeColor = gray
+        line.strokeColor = .white
         line.lineWidth = 3
         line.lineCap = .round
         hatch.addChild(line)
 
-        // lock shows on the create button
-
-        let body = SKPhysicsBody(edgeFrom: CGPoint(x: startX, y: y),
-                                 to: CGPoint(x: endX, y: y))
+        let body = SKPhysicsBody(edgeFrom: CGPoint(x: edgeInset, y: y),
+                                 to: CGPoint(x: size.width - edgeInset, y: y))
         body.categoryBitMask = Cat.ground
         hatch.physicsBody = body
 
@@ -417,6 +408,78 @@ final class LevelScene: SKScene {
         pendingRestore = state
         if player != nil { buildLevel() }
     }
+
+    // renders the visible level (platforms, item, gate, cube) for the save card,
+    // no walls or empty heart since those dont show in the real level
+    func thumbnailImage() -> UIImage? {
+        guard let player else { return nil }
+        let scale: CGFloat = 0.28
+        // crop to the save card aspect, trims the bar/gate below and empty top
+        let cardAspect: CGFloat = 0.72
+        let winH = size.width / cardAspect
+        let winBottom = boxBottomY
+        let imgSize = CGSize(width: size.width * scale, height: winH * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: imgSize, format: format)
+
+        func pt(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: p.x * scale, y: imgSize.height - (p.y - winBottom) * scale)
+        }
+
+        return renderer.image { ctx in
+            let cg = ctx.cgContext
+            UIColor.black.setFill()
+            cg.fill(CGRect(origin: .zero, size: imgSize))
+
+            cg.setLineCap(.round)
+
+            // platforms
+            cg.setStrokeColor(UIColor.white.cgColor)
+            cg.setLineWidth(3 * scale)
+            for node in platformsNode?.children ?? [] {
+                guard let bb = (node as? SKShapeNode)?.path?.boundingBoxOfPath else { continue }
+                cg.move(to: pt(CGPoint(x: bb.minX, y: bb.midY)))
+                cg.addLine(to: pt(CGPoint(x: bb.maxX, y: bb.midY)))
+            }
+            cg.strokePath()
+
+            // locked gate spans the floor
+            if !hatchUnlocked {
+                cg.setStrokeColor(UIColor.white.cgColor)
+                cg.setLineWidth(3 * scale)
+                cg.move(to: pt(CGPoint(x: 0, y: boxBottomY)))
+                cg.addLine(to: pt(CGPoint(x: size.width, y: boxBottomY)))
+                cg.strokePath()
+            }
+
+            // collectible item
+            for node in [heart, wings].compactMap({ $0 }) {
+                guard let sprite = node.children.first as? SKSpriteNode,
+                      let cgImg = sprite.texture?.cgImage() else { continue }
+                let sz = sprite.texture!.size()
+                let c = pt(node.position)
+                UIImage(cgImage: cgImg).draw(in: CGRect(x: c.x - sz.width * scale / 2,
+                                                        y: c.y - sz.height * scale / 2,
+                                                        width: sz.width * scale,
+                                                        height: sz.height * scale))
+            }
+
+            // cube with its eyes
+            let side = 30 * scale
+            let c = pt(player.position)
+            let cubeRect = CGRect(x: c.x - side / 2, y: c.y - side / 2, width: side, height: side)
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: cubeRect, cornerRadius: 7 * scale).fill()
+            UIColor.black.setFill()
+            for ex in [-6.0, 6.0] {
+                let e = pt(CGPoint(x: player.position.x + ex, y: player.position.y + 4))
+                cg.fillEllipse(in: CGRect(x: e.x - 3 * scale, y: e.y - 3 * scale,
+                                          width: 6 * scale, height: 6 * scale))
+            }
+        }
+    }
+
 
     func setMove(_ direction: CGFloat) {
         moveDirection = direction

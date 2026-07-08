@@ -26,9 +26,7 @@ struct GameTabBar: View {
             HStack(spacing: 0) {
                 barHoldItem(rotation: .degrees(-90), direction: -1)
                 barHoldItem(rotation: .degrees(90), direction: 1)
-                columnDivider
                 createGate
-                columnDivider
                 dashItem
                 jumpItem
             }
@@ -91,11 +89,6 @@ struct GameTabBar: View {
         }
     }
 
-    private var columnDivider: some View {
-        Rectangle()
-            .fill(.white.opacity(0.15))
-            .frame(width: 0.5)
-    }
 
     private var createGate: some View {
         ZStack {
