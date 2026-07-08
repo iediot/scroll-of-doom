@@ -4,6 +4,12 @@ import SwiftUI
 struct SaveSlot: Codable {
     var level = 0
     var powerups: Set<Powerup> = []
+    // exact cube position and per level item state, nil means a fresh start
+    var cubeX: Double?
+    var cubeY: Double?
+    var hasKey = false
+    var gateOpen = false
+    var pickupTaken = false
     var lastPlayed = Date()
 }
 
@@ -365,18 +371,29 @@ struct FeedView: View {
         if slot.powerups.contains(.dash) {
             for s in scenes { s.hasDash = true }
         }
-        scenes[level].prepareEntry(atXFraction: 0.5)
+
+        let hasPosition = slot.cubeX != nil && slot.cubeY != nil
+        if hasPosition {
+            // resume exactly where the save left off, item state and all
+            scenes[level].restore(.init(x: slot.cubeX!, y: slot.cubeY!,
+                                        hasKey: slot.hasKey, hatchOpen: slot.gateOpen,
+                                        skipPickup: slot.pickupTaken))
+        } else {
+            scenes[level].prepareEntry(atXFraction: 0.5)
+        }
 
         currentLevel = level
         scrollOffset = 0
-        gateUnlocked = false
+        gateUnlocked = slot.gateOpen
         loading = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             choosingSlot = false
             showGame = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            scenes[level].beginEntry()
+        if !hasPosition {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                scenes[level].beginEntry()
+            }
         }
     }
 
@@ -384,6 +401,14 @@ struct FeedView: View {
         guard let a = activeSlot, a < slots.count else { return }
         slots[a].level = currentLevel
         slots[a].powerups = runPowerups
+        if let scene = scenes?[currentLevel] {
+            let s = scene.snapshot()
+            slots[a].cubeX = s.x
+            slots[a].cubeY = s.y
+            slots[a].hasKey = s.hasKey
+            slots[a].gateOpen = s.hatchOpen
+            slots[a].pickupTaken = s.skipPickup
+        }
         slots[a].lastPlayed = Date()
         SaveStore.save(slots)
     }
@@ -596,8 +621,8 @@ struct FeedView: View {
             // would otherwise be eaten by the old level
             scenes[index + 1].setMove(heldDirection)
             scenes[index + 1].beginEntry()
+            saveProgress()
         }
-        saveProgress()
     }
 }
 

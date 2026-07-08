@@ -61,6 +61,15 @@ final class LevelScene: SKScene {
     private var dashReadyTime: TimeInterval = -1
     private var dashDirection: CGFloat = 1
     private var lastFacing: CGFloat = 1
+    struct RestoreState {
+        let x: Double
+        let y: Double
+        let hasKey: Bool
+        let hatchOpen: Bool
+        let skipPickup: Bool
+    }
+
+    private var pendingRestore: RestoreState?
     private var bossDelivered = false
     private var lastJumpState = (first: true, second: false)
     private var lastDashReady = true
@@ -122,9 +131,11 @@ final class LevelScene: SKScene {
 
     private func buildLevel() {
         removeAllChildren()
-        hasKey = false
-        hatchUnlocked = false
-        bossDelivered = false
+        let restore = pendingRestore
+        pendingRestore = nil
+        hasKey = restore?.hasKey ?? false
+        hatchUnlocked = restore?.hatchOpen ?? false
+        bossDelivered = restore?.hatchOpen ?? false
 
         let cube = CGSize(width: 30, height: 30)
         player = SKShapeNode(rectOf: cube, cornerRadius: 7)
@@ -156,12 +167,22 @@ final class LevelScene: SKScene {
 
         layoutBox()
         addHeartSlot()
+        // a held or delivered item isnt rendered again
+        let skip = restore?.skipPickup ?? false
         if isAdLevel {
-            addWings()
+            if !skip { addWings() }
         } else {
-            addHeartKey()
+            if !skip { addHeartKey() }
         }
-        respawnCube()
+        if hatchUnlocked, !isAdLevel, !isBossLevel {
+            heartSlot?.addChild(SKSpriteNode(texture: GameArt.heartTexture(filled: true)))
+        }
+
+        if let restore {
+            placeCube(fracX: restore.x, fracY: restore.y)
+        } else {
+            respawnCube()
+        }
         lastLayoutSize = size
     }
 
@@ -370,6 +391,31 @@ final class LevelScene: SKScene {
         player.physicsBody?.isDynamic = true
         player.isHidden = false
         hasFallenThrough = false
+    }
+
+    private func placeCube(fracX: Double, fracY: Double) {
+        player.position = CGPoint(x: CGFloat(fracX) * size.width,
+                                  y: CGFloat(fracY) * size.height)
+        player.physicsBody?.velocity = .zero
+        player.physicsBody?.isDynamic = true
+        player.isHidden = false
+        hasFallenThrough = false
+    }
+
+    // exact state for the save, held items report as consumed so they wont respawn
+    func snapshot() -> RestoreState {
+        guard let player else {
+            return RestoreState(x: 0.5, y: 0.5, hasKey: false, hatchOpen: false, skipPickup: false)
+        }
+        let consumed = isAdLevel ? (wings == nil) : (heart == nil)
+        return RestoreState(x: Double(player.position.x / size.width),
+                            y: Double(player.position.y / size.height),
+                            hasKey: hasKey, hatchOpen: hatchUnlocked, skipPickup: consumed)
+    }
+
+    func restore(_ state: RestoreState) {
+        pendingRestore = state
+        if player != nil { buildLevel() }
     }
 
     func setMove(_ direction: CGFloat) {
