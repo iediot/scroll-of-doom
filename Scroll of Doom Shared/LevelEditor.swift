@@ -250,10 +250,15 @@ struct LevelEditorView: View {
     var onExit: () -> Void
 
     @State private var selected: UUID?
+    @State private var heartSelected = false
+    @State private var showProps = false
     @State private var playing = false
     @State private var heartPlaced: Bool
     @State private var draggingNewPlatform: UUID?
     @State private var draggingHeart = false
+    @State private var dragAnchor: CGPoint?
+    @State private var canvasSize: CGSize = .zero
+    private let gridCols: CGFloat = 24
 
     init(level: LevelData, isNew: Bool = false,
          onSave: @escaping (LevelData) -> Void, onExit: @escaping () -> Void) {
@@ -277,7 +282,10 @@ struct LevelEditorView: View {
                 Image(systemName: "heart").font(.system(size: 28)).foregroundStyle(.white.opacity(0.45))
                     .position(x: w - GameRef.slotRightInset, y: GameRef.slotTopOffset)
 
-                Color.clear.contentShape(Rectangle()).onTapGesture { selected = nil }
+                gridOverlay(w: w, h: h)
+
+                Color.clear.contentShape(Rectangle())
+                    .onTapGesture { selected = nil; heartSelected = false }
 
                 ForEach($level.platforms) { $p in platformView($p, w: w, h: h) }
 
@@ -287,11 +295,50 @@ struct LevelEditorView: View {
                 paletteBar(w: w, h: h, barY: barY)
             }
             .coordinateSpace(name: "canvas")
+            .onAppear { canvasSize = CGSize(width: w, height: h) }
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
+        .onChange(of: selected) { _, new in if new == nil { showProps = false } }
+        .sheet(isPresented: $showProps) {
+            propsSheet
+                .presentationDetents([.height(190)])
+                .presentationBackground(.ultraThinMaterial)
+        }
         .fullScreenCover(isPresented: $playing) {
             LevelPlaytestView(level: level, onExit: { playing = false })
+        }
+    }
+
+    @ViewBuilder private var propsSheet: some View {
+        if let id = selected, let i = level.platforms.firstIndex(where: { $0.id == id }) {
+            let vert = level.platforms[i].isVertical
+            let cells = Binding<Int>(
+                get: { max(1, Int((level.platforms[i].w * gridCols).rounded())) },
+                set: { n in
+                    level.platforms[i].w = Double(n) / Double(gridCols)
+                    let W = canvasSize.width, H = canvasSize.height
+                    guard W > 0, H > 0 else { return }
+                    let c = CGPoint(x: CGFloat(level.platforms[i].x) * W,
+                                    y: (1 - CGFloat(level.platforms[i].y)) * H)
+                    let s = snapPlatform(c, w: W, cells: n, vertical: vert)
+                    level.platforms[i].x = fx(s.x, W)
+                    level.platforms[i].y = fy(s.y, H)
+                }
+            )
+            VStack(alignment: .leading, spacing: 22) {
+                Text("Properties").font(.title2).bold()
+                HStack {
+                    Text(vert ? "Height" : "Length").font(.headline)
+                    Spacer()
+                    Text("\(cells.wrappedValue) squares").font(.headline).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Stepper("", value: cells, in: 1...Int(gridCols)).labelsHidden()
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -303,8 +350,20 @@ struct LevelEditorView: View {
                         .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
                 }
                 TextField("name", text: $level.name)
-                    .font(.subheadline).bold().foregroundStyle(.white).frame(maxWidth: 150)
+                    .font(.subheadline).bold().foregroundStyle(.white).frame(maxWidth: 130)
                 Spacer()
+                if let id = selected {
+                    Button { showProps = true } label: {
+                        Image(systemName: "slider.horizontal.3").font(.system(size: 15, weight: .semibold))
+                            .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
+                    }
+                    .foregroundStyle(.white)
+                    Button { delete(id) } label: {
+                        Image(systemName: "trash").font(.system(size: 15, weight: .semibold))
+                            .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
+                    }
+                    .foregroundStyle(.red)
+                }
                 Button { playing = true } label: {
                     Image(systemName: "play.fill").font(.system(size: 16))
                         .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
@@ -334,8 +393,9 @@ struct LevelEditorView: View {
                         .gesture(DragGesture(coordinateSpace: .named("canvas"))
                             .onChanged { v in
                                 draggingHeart = true
-                                level.heartX = fx(v.location.x, w)
-                                level.heartY = fy(v.location.y, h)
+                                let s = snap(v.location, w: w, h: h)
+                                level.heartX = fx(s.x, w)
+                                level.heartY = fy(s.y, h)
                             }
                             .onEnded { _ in draggingHeart = false; heartPlaced = true; selected = nil })
                 }
@@ -354,12 +414,14 @@ struct LevelEditorView: View {
             .frame(width: 56, height: 46).contentShape(Rectangle())
             .gesture(DragGesture(coordinateSpace: .named("canvas"))
                 .onChanged { v in
+                    let cells = vertical ? 4 : 5
+                    let s = snapPlatform(v.location, w: w, cells: cells, vertical: vertical)
                     if let id = draggingNewPlatform, let i = level.platforms.firstIndex(where: { $0.id == id }) {
-                        level.platforms[i].x = fx(v.location.x, w)
-                        level.platforms[i].y = fy(v.location.y, h)
+                        level.platforms[i].x = fx(s.x, w)
+                        level.platforms[i].y = fy(s.y, h)
                     } else {
-                        let p = PlatformData(x: fx(v.location.x, w), y: fy(v.location.y, h),
-                                             w: vertical ? 0.18 : 0.22, vertical: vertical ? true : nil)
+                        let p = PlatformData(x: fx(s.x, w), y: fy(s.y, h),
+                                             w: Double(cells) / Double(gridCols), vertical: vertical ? true : nil)
                         level.platforms.append(p)
                         draggingNewPlatform = p.id
                         selected = p.id
@@ -374,42 +436,82 @@ struct LevelEditorView: View {
         let cy = (1 - CGFloat(p.wrappedValue.y)) * h
         let len = CGFloat(p.wrappedValue.w) * w
         let vert = p.wrappedValue.isVertical
-        return ZStack {
-            Capsule().fill(isSel ? Color.yellow : .white)
-                .frame(width: vert ? 3 : len, height: vert ? len : 3)
-            if isSel {
-                Button { delete(p.wrappedValue.id) } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 18)).foregroundStyle(.red)
+        return Capsule().fill(isSel ? Color.yellow : .white)
+            .frame(width: vert ? 3 : len, height: vert ? len : 3)
+            .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
+            .contentShape(Rectangle())
+            .position(x: cx, y: cy)
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
+                .onChanged { v in
+                    if dragAnchor == nil {
+                        selected = p.wrappedValue.id; heartSelected = false
+                        dragAnchor = CGPoint(x: cx, y: cy)
+                    }
+                    guard let a = dragAnchor else { return }
+                    let cells = max(1, Int((p.wrappedValue.w * gridCols).rounded()))
+                    let s = snapPlatform(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height),
+                                         w: w, cells: cells, vertical: vert)
+                    p.wrappedValue.x = fx(s.x, w)
+                    p.wrappedValue.y = fy(s.y, h)
                 }
-                .offset(x: vert ? 0 : -len / 2 - 16, y: vert ? -len / 2 - 16 : 0)
-                Circle().fill(.yellow).frame(width: 16, height: 16)
-                    .offset(x: vert ? 0 : len / 2 + 10, y: vert ? len / 2 + 10 : 0)
-                    .gesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { v in
-                        let half = vert ? max(16, v.location.y - cy) : max(16, v.location.x - cx)
-                        p.wrappedValue.w = clamp(Double(2 * half / w), 0.05, 0.9)
-                    })
-            }
-        }
-        .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
-        .contentShape(Rectangle())
-        .position(x: cx, y: cy)
-        .gesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { v in
-            selected = p.wrappedValue.id
-            p.wrappedValue.x = fx(v.location.x, w)
-            p.wrappedValue.y = fy(v.location.y, h)
-        })
-        .onTapGesture { selected = p.wrappedValue.id }
+                .onEnded { _ in dragAnchor = nil })
+            .onTapGesture { selected = p.wrappedValue.id; heartSelected = false }
     }
 
     private func heartView(w: CGFloat, h: CGFloat) -> some View {
-        Image(systemName: "heart.fill")
-            .font(.system(size: 28)).foregroundStyle(.white)
+        let cx = CGFloat(level.heartX) * w, cy = (1 - CGFloat(level.heartY)) * h
+        return Image(systemName: "heart.fill")
+            .font(.system(size: 28)).foregroundStyle(heartSelected ? .yellow : .white)
             .shadow(color: .black.opacity(0.6), radius: 3)
-            .position(x: CGFloat(level.heartX) * w, y: (1 - CGFloat(level.heartY)) * h)
-            .gesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { v in
-                level.heartX = fx(v.location.x, w)
-                level.heartY = fy(v.location.y, h)
-            })
+            .frame(width: 44, height: 44).contentShape(Rectangle())
+            .position(x: cx, y: cy)
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
+                .onChanged { v in
+                    if dragAnchor == nil { heartSelected = true; selected = nil; dragAnchor = CGPoint(x: cx, y: cy) }
+                    guard let a = dragAnchor else { return }
+                    let s = snap(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height), w: w, h: h)
+                    level.heartX = fx(s.x, w)
+                    level.heartY = fy(s.y, h)
+                }
+                .onEnded { _ in dragAnchor = nil })
+            .onTapGesture { heartSelected = true; selected = nil }
+    }
+
+    // faint square grid the items snap to
+    private func gridOverlay(w: CGFloat, h: CGFloat) -> some View {
+        let cell = w / gridCols
+        return Canvas { ctx, size in
+            var x: CGFloat = 0
+            while x <= size.width {
+                ctx.stroke(Path { $0.move(to: CGPoint(x: x, y: 0)); $0.addLine(to: CGPoint(x: x, y: size.height)) },
+                           with: .color(.white.opacity(0.14)), lineWidth: 0.5)
+                x += cell
+            }
+            var y: CGFloat = 0
+            while y <= size.height {
+                ctx.stroke(Path { $0.move(to: CGPoint(x: 0, y: y)); $0.addLine(to: CGPoint(x: size.width, y: y)) },
+                           with: .color(.white.opacity(0.14)), lineWidth: 0.5)
+                y += cell
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    // snap a screen point to the nearest grid intersection
+    private func snap(_ p: CGPoint, w: CGFloat, h: CGFloat) -> CGPoint {
+        let cell = w / gridCols
+        return CGPoint(x: (p.x / cell).rounded() * cell, y: (p.y / cell).rounded() * cell)
+    }
+
+    // snap a bar so both its ends land on grid lines, along its long axis, and
+    // its thin axis sits on a line too
+    private func snapPlatform(_ center: CGPoint, w: CGFloat, cells: Int, vertical: Bool) -> CGPoint {
+        let cell = w / gridCols
+        let half = CGFloat(cells) * cell / 2
+        func line(_ c: CGFloat) -> CGFloat { (c / cell).rounded() * cell }
+        func edge(_ c: CGFloat) -> CGFloat { ((c - half) / cell).rounded() * cell + half }
+        return vertical ? CGPoint(x: line(center.x), y: edge(center.y))
+                        : CGPoint(x: edge(center.x), y: line(center.y))
     }
 
     private func delete(_ id: UUID) {
