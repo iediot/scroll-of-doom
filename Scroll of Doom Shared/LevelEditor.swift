@@ -27,7 +27,7 @@ struct MyLevelsView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+            Color.gameBG.ignoresSafeArea()
 
             // grid scrolls the full height, under the floating title
             ScrollViewReader { proxy in
@@ -63,8 +63,8 @@ struct MyLevelsView: View {
         .fullScreenCover(item: $playing) { level in
             LevelPlaytestView(level: level, onExit: { playing = nil })
         }
-        .alert("Paste a level code", isPresented: $showImport) {
-            TextField("code", text: $importText)
+        .alert("Paste a Level Code", isPresented: $showImport) {
+            TextField("Code", text: $importText)
             Button("Import") {
                 if let l = CustomLevelStore.decode(importText) { upsert(l) }
                 importText = ""
@@ -193,6 +193,19 @@ struct MyLevelsView: View {
                             .shadow(radius: 2).padding(5)
                     }
                 }
+                .overlay(alignment: .topTrailing) {
+                    if !level.powerups.isEmpty {
+                        HStack(spacing: 3) {
+                            ForEach(Array(level.powerups), id: \.self) { p in
+                                Image(uiImage: GameArt.icon(for: p))
+                                    .resizable().scaledToFit().frame(width: 15)
+                            }
+                        }
+                        .padding(.horizontal, 4).padding(.vertical, 3)
+                        .background(.white.opacity(0.2), in: Capsule())
+                        .padding(5)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -222,21 +235,69 @@ struct MyLevelsView: View {
     }
 }
 
-// small static drawing of a level, mirrors the save thumbnail idea
+// a static mini render of the level, same look as the game minus the player
 private struct LevelPreview: View {
     let level: LevelData
 
+    private let ref = UIScreen.main.bounds.size
+    private let edgeInset: CGFloat = 4
+
+    // game point, y up, to preview point, y down
+    private func point(_ x: CGFloat, _ y: CGFloat, _ f: Fit) -> CGPoint {
+        CGPoint(x: f.ox + x * f.s, y: f.oy + (ref.height - y) * f.s)
+    }
+
+    private struct Fit { let s, ox, oy: CGFloat }
+
+    private func fit(_ size: CGSize) -> Fit {
+        // fill the square and crop the overflow rather than letterboxing the phone shape,
+        // shifted up a touch so the level sits a little higher in the tile
+        let s = max(size.width / ref.width, size.height / ref.height)
+        return Fit(s: s, ox: (size.width - ref.width * s) / 2,
+                   oy: (size.height - ref.height * s) / 2 - size.height * 0.06)
+    }
+
     var body: some View {
         GeometryReader { g in
-            let w = g.size.width, h = g.size.height
-            ForEach(level.platforms) { p in
-                Capsule().fill(.white)
-                    .frame(width: p.isVertical ? 2 : CGFloat(p.w) * w,
-                           height: p.isVertical ? CGFloat(p.w) * w : 2)
-                    .position(x: CGFloat(p.x) * w, y: (1 - CGFloat(p.y)) * h)
+            let f = fit(g.size)
+            let hp = max(7, 22 * f.s)
+            ZStack(alignment: .topLeading) {
+                Color(white: 0.16)
+                Canvas { ctx, _ in draw(ctx, f) }
+
+                // the placed heart key
+                Image(systemName: "heart.fill").font(.system(size: hp)).foregroundStyle(.white)
+                    .position(point(CGFloat(level.heartX) * ref.width, CGFloat(level.heartY) * ref.height, f))
             }
-            Image(systemName: "heart.fill").font(.system(size: 8)).foregroundStyle(.white)
-                .position(x: CGFloat(level.heartX) * w, y: (1 - CGFloat(level.heartY)) * h)
+            .frame(width: g.size.width, height: g.size.height)
+            .clipped()
+        }
+    }
+
+    private func draw(_ ctx: GraphicsContext, _ f: Fit) {
+        let line = max(1.2, 3 * f.s)
+        // the side walls and top are black in game, only the gate and platforms show
+        let tl = point(edgeInset, ref.height - edgeInset, f)
+        let br = point(ref.width - edgeInset, GameRef.barHeight, f)
+
+        // the full width gate that is the floor
+        var gate = Path()
+        gate.move(to: CGPoint(x: tl.x, y: br.y))
+        gate.addLine(to: CGPoint(x: br.x, y: br.y))
+        ctx.stroke(gate, with: .color(.white), lineWidth: line)
+
+        // platforms and walls
+        for p in level.platforms {
+            let cx = CGFloat(p.x) * ref.width + CGFloat(p.offX)
+            let cy = CGFloat(p.y) * ref.height + CGFloat(p.offY)
+            let len = CGFloat(p.w) * ref.width
+            var seg = Path()
+            if p.isVertical {
+                seg.move(to: point(cx, cy - len / 2, f)); seg.addLine(to: point(cx, cy + len / 2, f))
+            } else {
+                seg.move(to: point(cx - len / 2, cy, f)); seg.addLine(to: point(cx + len / 2, cy, f))
+            }
+            ctx.stroke(seg, with: .color(.white), style: StrokeStyle(lineWidth: line, lineCap: .round))
         }
     }
 }
@@ -251,7 +312,11 @@ struct LevelEditorView: View {
 
     @State private var selected: UUID?
     @State private var heartSelected = false
+    @State private var multiMode = false
+    @State private var multiSelected: Set<UUID> = []
+    @State private var multiAnchors: [UUID: CGPoint] = [:]
     @State private var showProps = false
+    @State private var showPowerups = false
     @State private var playing = false
     @State private var heartPlaced: Bool
     @State private var draggingNewPlatform: UUID?
@@ -275,7 +340,7 @@ struct LevelEditorView: View {
             let barY = h - GameRef.barHeight
 
             ZStack {
-                Color.black
+                Color.gameBG
 
                 // gate line and the empty heart slot, drawn exactly where the game puts them
                 Rectangle().fill(.white.opacity(0.35)).frame(height: 1).position(x: w / 2, y: barY)
@@ -285,7 +350,7 @@ struct LevelEditorView: View {
                 gridOverlay(w: w, h: h)
 
                 Color.clear.contentShape(Rectangle())
-                    .onTapGesture { selected = nil; heartSelected = false }
+                    .onTapGesture { selected = nil; heartSelected = false; multiSelected = [] }
 
                 ForEach($level.platforms) { $p in platformView($p, w: w, h: h) }
 
@@ -302,7 +367,12 @@ struct LevelEditorView: View {
         .onChange(of: selected) { _, new in if new == nil { showProps = false } }
         .sheet(isPresented: $showProps) {
             propsSheet
-                .presentationDetents([.height(190)])
+                .presentationDetents([.height(300)])
+                .presentationBackground(.ultraThinMaterial)
+        }
+        .sheet(isPresented: $showPowerups) {
+            powerupsSheet
+                .presentationDetents([.height(240)])
                 .presentationBackground(.ultraThinMaterial)
         }
         .fullScreenCover(isPresented: $playing) {
@@ -326,15 +396,20 @@ struct LevelEditorView: View {
                     level.platforms[i].y = fy(s.y, H)
                 }
             )
-            VStack(alignment: .leading, spacing: 22) {
+            let maxOff = max(0, Int(canvasSize.width / gridCols) - 1)
+            let ox = Binding<Int>(
+                get: { Int(level.platforms[i].offX) },
+                set: { level.platforms[i].ox = Double($0) }
+            )
+            let oy = Binding<Int>(
+                get: { Int(level.platforms[i].offY) },
+                set: { level.platforms[i].oy = Double($0) }
+            )
+            VStack(alignment: .leading, spacing: 18) {
                 Text("Properties").font(.title2).bold()
-                HStack {
-                    Text(vert ? "Height" : "Length").font(.headline)
-                    Spacer()
-                    Text("\(cells.wrappedValue) squares").font(.headline).monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    Stepper("", value: cells, in: 1...Int(gridCols)).labelsHidden()
-                }
+                propRow(vert ? "Height" : "Length", "\(cells.wrappedValue) squares", cells, 1...Int(gridCols))
+                propRow("X Offset", "\(ox.wrappedValue) px", ox, 0...maxOff)
+                propRow("Y Offset", "\(oy.wrappedValue) px", oy, 0...maxOff)
             }
             .foregroundStyle(.white)
             .padding(24)
@@ -342,38 +417,79 @@ struct LevelEditorView: View {
         }
     }
 
+    private func propRow(_ label: String, _ value: String, _ binding: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
+        HStack {
+            Text(label).font(.headline)
+            Spacer()
+            Text(value).font(.headline).monospacedDigit().foregroundStyle(.secondary)
+            Stepper("", value: binding, in: range).labelsHidden()
+        }
+    }
+
+    private var powerupsSheet: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Powerups").font(.title2).bold()
+            ForEach(Powerup.allCases, id: \.self) { p in
+                Toggle(isOn: powerupBinding(p)) {
+                    Text(powerupName(p)).font(.headline)
+                }
+            }
+        }
+        .tint(.green)
+        .foregroundStyle(.white)
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func powerupBinding(_ p: Powerup) -> Binding<Bool> {
+        Binding(get: { level.powerups.contains(p) },
+                set: { if $0 { level.powerups.insert(p) } else { level.powerups.remove(p) } })
+    }
+
+    private func powerupName(_ p: Powerup) -> String {
+        switch p {
+        case .doubleJump: return "Double Jump"
+        case .dash: return "Dash"
+        }
+    }
+
     private var topBar: some View {
         VStack {
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 Button(action: exitSaving) {
                     Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
                         .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
                 }
                 TextField("name", text: $level.name)
-                    .font(.subheadline).bold().foregroundStyle(.white).frame(maxWidth: 130)
+                    .font(.subheadline).bold().foregroundStyle(.white).frame(maxWidth: 80)
                 Spacer()
-                if let id = selected {
-                    Button { showProps = true } label: {
-                        Image(systemName: "slider.horizontal.3").font(.system(size: 15, weight: .semibold))
-                            .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
-                    }
-                    .foregroundStyle(.white)
-                    Button { delete(id) } label: {
-                        Image(systemName: "trash").font(.system(size: 15, weight: .semibold))
-                            .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
-                    }
-                    .foregroundStyle(.red)
+                if selected != nil, !multiMode {
+                    barButton("slider.horizontal.3") { showProps = true }
                 }
-                Button { playing = true } label: {
-                    Image(systemName: "play.fill").font(.system(size: 16))
-                        .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
+                if selected != nil || !multiSelected.isEmpty {
+                    barButton("trash", tint: .red) { deleteSelected() }
                 }
+                barButton(multiMode ? "checkmark.circle.fill" : "checkmark.circle",
+                          tint: multiMode ? .yellow : .white) {
+                    multiMode.toggle()
+                    selected = nil; heartSelected = false; multiSelected = []
+                }
+                barButton("bolt.fill") { showPowerups = true }
+                barButton("play.fill") { playing = true }
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.top, 58)
             Spacer()
         }
+    }
+
+    private func barButton(_ name: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name).font(.system(size: 15, weight: .semibold))
+                .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
+        }
+        .foregroundStyle(tint)
     }
 
     // sits where the control bar will be and looks like it, drag items out of it
@@ -403,7 +519,7 @@ struct LevelEditorView: View {
                 Spacer()
             }
             .frame(height: GameRef.barHeight)
-            .background(Color.black)
+            .background(Color.gameBG)
         }
     }
 
@@ -431,9 +547,10 @@ struct LevelEditorView: View {
     }
 
     private func platformView(_ p: Binding<PlatformData>, w: CGFloat, h: CGFloat) -> some View {
-        let isSel = selected == p.wrappedValue.id
-        let cx = CGFloat(p.wrappedValue.x) * w
-        let cy = (1 - CGFloat(p.wrappedValue.y)) * h
+        let id = p.wrappedValue.id
+        let isSel = multiMode ? multiSelected.contains(id) : selected == id
+        let cx = CGFloat(p.wrappedValue.x) * w + CGFloat(p.wrappedValue.offX)
+        let cy = (1 - CGFloat(p.wrappedValue.y)) * h - CGFloat(p.wrappedValue.offY)
         let len = CGFloat(p.wrappedValue.w) * w
         let vert = p.wrappedValue.isVertical
         return Capsule().fill(isSel ? Color.yellow : .white)
@@ -443,19 +560,51 @@ struct LevelEditorView: View {
             .position(x: cx, y: cy)
             .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
                 .onChanged { v in
-                    if dragAnchor == nil {
-                        selected = p.wrappedValue.id; heartSelected = false
-                        dragAnchor = CGPoint(x: cx, y: cy)
+                    if multiMode {
+                        if multiAnchors.isEmpty {
+                            multiSelected.insert(id)
+                            for sid in multiSelected {
+                                if let q = level.platforms.first(where: { $0.id == sid }) {
+                                    multiAnchors[sid] = CGPoint(x: CGFloat(q.x) * w, y: (1 - CGFloat(q.y)) * h)
+                                }
+                            }
+                        }
+                        moveGroup(translation: v.translation, w: w, h: h)
+                    } else {
+                        if dragAnchor == nil {
+                            selected = id; heartSelected = false
+                            // grid position without the sub-cell offset, so snapping stays clean
+                            dragAnchor = CGPoint(x: CGFloat(p.wrappedValue.x) * w,
+                                                 y: (1 - CGFloat(p.wrappedValue.y)) * h)
+                        }
+                        guard let a = dragAnchor else { return }
+                        let cells = max(1, Int((p.wrappedValue.w * gridCols).rounded()))
+                        let s = snapPlatform(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height),
+                                             w: w, cells: cells, vertical: vert)
+                        p.wrappedValue.x = fx(s.x, w)
+                        p.wrappedValue.y = fy(s.y, h)
                     }
-                    guard let a = dragAnchor else { return }
-                    let cells = max(1, Int((p.wrappedValue.w * gridCols).rounded()))
-                    let s = snapPlatform(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height),
-                                         w: w, cells: cells, vertical: vert)
-                    p.wrappedValue.x = fx(s.x, w)
-                    p.wrappedValue.y = fy(s.y, h)
                 }
-                .onEnded { _ in dragAnchor = nil })
-            .onTapGesture { selected = p.wrappedValue.id; heartSelected = false }
+                .onEnded { _ in dragAnchor = nil; multiAnchors = [:] })
+            .onTapGesture {
+                if multiMode {
+                    if multiSelected.contains(id) { multiSelected.remove(id) } else { multiSelected.insert(id) }
+                } else {
+                    selected = id; heartSelected = false
+                }
+            }
+    }
+
+    // drag every selected platform by the same finger translation, each snapped to grid
+    private func moveGroup(translation: CGSize, w: CGFloat, h: CGFloat) {
+        for sid in multiSelected {
+            guard let a = multiAnchors[sid], let i = level.platforms.firstIndex(where: { $0.id == sid }) else { continue }
+            let cells = max(1, Int((level.platforms[i].w * gridCols).rounded()))
+            let s = snapPlatform(CGPoint(x: a.x + translation.width, y: a.y + translation.height),
+                                 w: w, cells: cells, vertical: level.platforms[i].isVertical)
+            level.platforms[i].x = fx(s.x, w)
+            level.platforms[i].y = fy(s.y, h)
+        }
     }
 
     private func heartView(w: CGFloat, h: CGFloat) -> some View {
@@ -519,6 +668,15 @@ struct LevelEditorView: View {
         selected = nil
     }
 
+    private func deleteSelected() {
+        if multiMode, !multiSelected.isEmpty {
+            level.platforms.removeAll { multiSelected.contains($0.id) }
+            multiSelected = []
+        } else if let id = selected {
+            delete(id)
+        }
+    }
+
     private func exitSaving() {
         onSave(level)
         onExit()
@@ -542,6 +700,7 @@ struct LevelPlaytestView: View {
     @State private var gateUnlocked = false
     @State private var jumpReady = true
     @State private var airJumpReady = false
+    @State private var dashReady = true
     @State private var heldDirection: CGFloat = 0
 
     init(level: LevelData, onExit: @escaping () -> Void) {
@@ -551,13 +710,15 @@ struct LevelPlaytestView: View {
         let s = LevelScene(size: UIScreen.main.bounds.size)
         s.customLevel = level
         s.bottomInset = GameTabBar.height
+        if level.powerups.contains(.doubleJump) { s.extraJumps = 1 }
+        if level.powerups.contains(.dash) { s.hasDash = true }
         _scene = State(initialValue: s)
     }
 
     // composed exactly like the game feed so the gate and bar line up identically
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.black
+            Color.gameBG
             SpriteView(scene: scene, preferredFramesPerSecond: 120,
                        options: [.ignoresSiblingOrder])
                 .ignoresSafeArea()
@@ -569,17 +730,19 @@ struct LevelPlaytestView: View {
         }
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
-                       dashEnabled: false, dashReady: true,
-                       wingsEnabled: false, jumpReady: jumpReady, airJumpReady: airJumpReady,
+                       dashEnabled: level.powerups.contains(.dash), dashReady: dashReady,
+                       wingsEnabled: level.powerups.contains(.doubleJump),
+                       jumpReady: jumpReady, airJumpReady: airJumpReady,
                        onMove: { scene.setMove($0) },
                        onJump: { scene.jump() },
-                       onDash: {})
+                       onDash: { scene.dash() })
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
         .onAppear {
             scene.onHatchOpened = { gateUnlocked = true }
             scene.onJumpStateChanged = { jumpReady = $0; airJumpReady = $1 }
+            scene.onDashStateChanged = { dashReady = $0 }
             // beating the level just restarts it for testing
             scene.onFellThrough = { _ in
                 gateUnlocked = false

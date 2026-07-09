@@ -52,14 +52,20 @@ enum GameArt {
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: canvas, format: format)
-        return renderer.image { _ in
-            for (dx, color) in [(7.0, UIColor.white),
-                                (0.0, UIColor.black),
-                                (-7.0, UIColor.white)] {
-                color.setFill()
-                roundedRightTriangle(center: CGPoint(x: 26 + dx, y: 17),
-                                     base: 25, cornerRadius: 5).fill()
-            }
+        return renderer.image { ctx in
+            // back arrow
+            UIColor.white.setFill()
+            roundedRightTriangle(center: CGPoint(x: 26 + 7, y: 17),
+                                 base: 25, cornerRadius: 5).fill()
+            // carve the gap out of the back arrow only, so it shows whatever is behind
+            ctx.cgContext.setBlendMode(.clear)
+            roundedRightTriangle(center: CGPoint(x: 26, y: 17),
+                                 base: 25, cornerRadius: 5).fill()
+            ctx.cgContext.setBlendMode(.normal)
+            // front arrow on top, untouched by the cut
+            UIColor.white.setFill()
+            roundedRightTriangle(center: CGPoint(x: 26 - 7, y: 17),
+                                 base: 25, cornerRadius: 5).fill()
         }
     }
 

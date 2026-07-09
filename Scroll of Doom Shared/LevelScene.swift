@@ -9,7 +9,11 @@ struct PlatformData: Codable, Identifiable, Equatable {
     var y: Double        // fraction of height from the bottom
     var w: Double        // length, fraction of screen width
     var vertical: Bool?  // optional so old saves still decode
+    var ox: Double?      // pixel offset within the grid cell, right
+    var oy: Double?      // pixel offset within the grid cell, up
     var isVertical: Bool { vertical == true }
+    var offX: Double { ox ?? 0 }
+    var offY: Double { oy ?? 0 }
 }
 
 struct LevelData: Codable, Identifiable, Equatable {
@@ -18,6 +22,7 @@ struct LevelData: Codable, Identifiable, Equatable {
     var platforms: [PlatformData] = []
     var heartX: Double = 0.5
     var heartY: Double = 0.24
+    var powerups: Set<Powerup> = []   // powerups granted to the player in this level
 }
 
 enum CustomLevelStore {
@@ -60,10 +65,11 @@ final class LevelScene: SKScene {
     // matches the create button column in the tab bar
 
     private enum Cat {
-        static let player: UInt32 = 0x1 << 0
-        static let ground: UInt32 = 0x1 << 1
-        static let heart:  UInt32 = 0x1 << 2
-        static let wings:  UInt32 = 0x1 << 3
+        static let player:   UInt32 = 0x1 << 0
+        static let ground:   UInt32 = 0x1 << 1
+        static let heart:    UInt32 = 0x1 << 2
+        static let wings:    UInt32 = 0x1 << 3
+        static let platform: UInt32 = 0x1 << 4   // custom platforms and walls, phased through on entry
     }
 
     var levelIndex = 0
@@ -136,6 +142,7 @@ final class LevelScene: SKScene {
     private var lastTime: TimeInterval = 0
     private var airJumpsUsed = 0
     private var hasFallenThrough = false
+    private var entryPhasing = false   // dropping in, passing through platforms until the floor
     private var pendingEntryFrac: CGFloat?
     private var lastLayoutSize: CGSize = .zero
 
@@ -150,7 +157,7 @@ final class LevelScene: SKScene {
 
     override func didMove(to view: SKView) {
         scaleMode = .resizeFill
-        backgroundColor = .black
+        backgroundColor = .gameBG
         physicsWorld.gravity = CGVector(dx: 0, dy: gravityY)
         physicsWorld.contactDelegate = self
         // representing must not rebuild and reset a level in progress
@@ -308,7 +315,7 @@ final class LevelScene: SKScene {
 
         // physics stays, visually hidden
         let shape = SKShapeNode(path: path)
-        shape.strokeColor = .black
+        shape.strokeColor = .gameBG
         shape.lineWidth = 3
         shape.lineCap = .round
         shape.lineJoin = .round
@@ -361,15 +368,15 @@ final class LevelScene: SKScene {
 
         if let c = customLevel {
             for p in c.platforms {
-                let cx = CGFloat(p.x) * size.width
-                let cy = CGFloat(p.y) * size.height
+                let cx = CGFloat(p.x) * size.width + CGFloat(p.offX)
+                let cy = CGFloat(p.y) * size.height + CGFloat(p.offY)
                 let len = CGFloat(p.w) * size.width
                 if p.isVertical {
                     addSegment(node: node, a: CGPoint(x: cx, y: cy - len / 2),
-                               b: CGPoint(x: cx, y: cy + len / 2))
+                               b: CGPoint(x: cx, y: cy + len / 2), category: Cat.platform)
                 } else {
                     addSegment(node: node, a: CGPoint(x: cx - len / 2, y: cy),
-                               b: CGPoint(x: cx + len / 2, y: cy))
+                               b: CGPoint(x: cx + len / 2, y: cy), category: Cat.platform)
                 }
             }
         } else {
@@ -394,7 +401,7 @@ final class LevelScene: SKScene {
                    b: CGPoint(x: cx + width / 2, y: y))
     }
 
-    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint) {
+    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint, category: UInt32 = Cat.ground) {
         let path = CGMutablePath()
         path.move(to: a)
         path.addLine(to: b)
@@ -403,7 +410,7 @@ final class LevelScene: SKScene {
         line.lineWidth = 3
         line.lineCap = .round
         let body = SKPhysicsBody(edgeFrom: a, to: b)
-        body.categoryBitMask = Cat.ground
+        body.categoryBitMask = category
         line.physicsBody = body
         node.addChild(line)
     }
@@ -466,6 +473,8 @@ final class LevelScene: SKScene {
         player.physicsBody?.isDynamic = true
         player.isHidden = false
         hasFallenThrough = false
+        // drop in phasing through platforms, solid again once it lands on the floor
+        beginEntryPhasing(customLevel != nil)
     }
 
     private func placeCube(fracX: Double, fracY: Double) {
@@ -475,6 +484,13 @@ final class LevelScene: SKScene {
         player.physicsBody?.isDynamic = true
         player.isHidden = false
         hasFallenThrough = false
+        beginEntryPhasing(false)
+    }
+
+    private func beginEntryPhasing(_ on: Bool) {
+        entryPhasing = on
+        // while phasing only the floor collides, otherwise platforms and walls are solid too
+        player.physicsBody?.collisionBitMask = on ? Cat.ground : Cat.ground | Cat.platform
     }
 
     // exact state for the save, held items report as consumed so they wont respawn
@@ -513,7 +529,8 @@ final class LevelScene: SKScene {
 
         return renderer.image { ctx in
             let cg = ctx.cgContext
-            UIColor.black.setFill()
+            // a touch of gray so cards read apart from each other and the black app
+            UIColor(white: 0.16, alpha: 1).setFill()
             cg.fill(CGRect(origin: .zero, size: imgSize))
 
             cg.setLineCap(.round)
@@ -744,7 +761,8 @@ final class LevelScene: SKScene {
         // terminal velocity so long falls cant tunnel through thin edges
         if body.velocity.dy < -1400 { body.velocity.dy = -1400 }
 
-        // raycast under the hitboxs bottom corners
+        // raycast under the hitboxs bottom corners, ignoring phased through platforms
+        let groundMask = entryPhasing ? Cat.ground : Cat.ground | Cat.platform
         var grounded = false
         if body.velocity.dy <= 20 {
             let foot = hitW / 2 - 1
@@ -752,7 +770,7 @@ final class LevelScene: SKScene {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
                 let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 6)
                 physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
-                    if hit.categoryBitMask == Cat.ground {
+                    if hit.categoryBitMask & groundMask != 0 {
                         grounded = true
                         stop.pointee = true
                     }
@@ -763,6 +781,8 @@ final class LevelScene: SKScene {
         if grounded {
             lastGroundedTime = sceneTime
             airJumpsUsed = 0
+            // touched the floor for the first time, everything turns solid
+            if entryPhasing { beginEntryPhasing(false) }
         }
         if body.velocity.dy < -60 {
             descentSpeed = min(descentSpeed, body.velocity.dy)
@@ -856,6 +876,9 @@ final class LevelScene: SKScene {
 extension LevelScene: SKPhysicsContactDelegate {
     func didBegin(_ contact: SKPhysicsContact) {
         let other = contact.bodyA.categoryBitMask == Cat.player ? contact.bodyB : contact.bodyA
+
+        // dropping in through the level, items cant be grabbed until it lands
+        if entryPhasing { return }
 
         switch other.categoryBitMask {
         case Cat.heart:

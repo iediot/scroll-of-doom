@@ -2,6 +2,10 @@
 import SwiftUI
 import SpriteKit
 
+// the app background, a very dark gray instead of pure black so surfaces read apart
+extension Color { static let gameBG = Color(white: 0.10) }
+extension UIColor { static let gameBG = UIColor(white: 0.10, alpha: 1) }
+
 // home/search move, create is the gate, profile jumps
 struct GameTabBar: View {
     static let height: CGFloat = 128
@@ -35,7 +39,7 @@ struct GameTabBar: View {
             .padding(.horizontal, 10)
         }
         .frame(height: Self.height)
-        .background(Color.black)
+        .background(Color.gameBG)
     }
 
     private func barHoldItem(rotation: Angle, direction: CGFloat) -> some View {
@@ -58,7 +62,7 @@ struct GameTabBar: View {
                     .rotationEffect(.degrees(90))
                     .offset(x: 7)
                 RoundedTriangle(cornerRadius: 5)
-                    .fill(.black)
+                    .fill(Color.gameBG)
                     .frame(width: 25, height: 25)
                     .rotationEffect(.degrees(90))
                 RoundedTriangle(cornerRadius: 5)
@@ -79,7 +83,7 @@ struct GameTabBar: View {
                     .frame(width: 25, height: 25)
                     .offset(y: -7)
                 RoundedTriangle(cornerRadius: 5)
-                    .fill(.black)
+                    .fill(Color.gameBG)
                     .frame(width: 25, height: 25)
                 RoundedTriangle(cornerRadius: 5)
                     .fill(jumpReady ? Color.white : Self.dimmed)
@@ -132,7 +136,7 @@ struct LevelPageView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color.black
+            Color.gameBG
             SpriteView(scene: scene, preferredFramesPerSecond: 120,
                        options: [.ignoresSiblingOrder])
             engagementRail

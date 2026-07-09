@@ -150,7 +150,7 @@ struct FeedView: View {
 
     private var loadingScreen: some View {
         ZStack {
-            Color.black
+            Color.gameBG
             VStack(spacing: 14) {
                 ProgressView()
                     .progressViewStyle(.circular)
@@ -173,7 +173,7 @@ struct FeedView: View {
 
     private var slotScreen: some View {
         ZStack(alignment: .topLeading) {
-            Color.black
+            Color.gameBG
             if unsaveIndex != nil {
                 Color.clear
                     .contentShape(Rectangle())
@@ -456,20 +456,25 @@ struct FeedView: View {
     // fake iphone home screen, the game hides behind the play app
     private func homeScreen(size: CGSize) -> some View {
         ZStack {
-            Color.black
+            Color.gameBG
+            Image("wallpaper")
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .clipped()
+                .ignoresSafeArea()
             VStack(spacing: 30) {
                 widget
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4),
                           spacing: 22) {
                     AppIcon(art: .settings, label: "Settings") { openApp = "settings" }
-                    AppIcon(art: .tips, label: "Tips") { openApp = "tips" }
+                    AppIcon(art: .tips, label: "Notes") { openApp = "tips" }
                     AppIcon(art: .music, label: "Music") { openApp = "music" }
                     AppIcon(art: .play, label: "PLAY") { choosingSlot = true }
                     AppIcon(art: .messages, label: "Messages")
                     AppIcon(art: .camera, label: "Camera")
-                    AppIcon(art: .photos, label: "Photos") { showCreator = true }
+                    AppIcon(art: .photos, label: "Gallery") { showCreator = true }
                     AppIcon(art: .clock, label: "Clock")
-                    AppIcon(art: .calendar, label: "Calendar")
                     AppIcon(art: .maps, label: "Maps")
                 }
                 Spacer()
@@ -505,7 +510,7 @@ struct FeedView: View {
 
     private func appScreen(_ name: String) -> some View {
         ZStack(alignment: .topLeading) {
-            Color.black
+            Color.gameBG
             Text(name)
                 .font(.title2)
                 .foregroundStyle(.white)
@@ -650,7 +655,7 @@ struct FeedView: View {
 
 private struct AppIcon: View {
     enum Art: String {
-        case settings, tips, messages, camera, photos, clock, calendar,
+        case settings, tips, messages, camera, photos, clock,
              music, maps, phone, safari, mail, facetime, play
     }
 
@@ -663,18 +668,6 @@ private struct AppIcon: View {
             VStack(spacing: 6) {
                 artwork
                     .frame(width: 62, height: 62)
-                    .clipShape(RoundedRectangle(cornerRadius: 15))
-                    // liquid glass sheen and rim
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 15)
-                            .fill(LinearGradient(
-                                colors: [.white.opacity(0.25), .white.opacity(0.05), .clear],
-                                startPoint: .topLeading, endPoint: .bottom))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 15)
-                            .strokeBorder(.white.opacity(0.25), lineWidth: 0.8)
-                    )
                 if let label {
                     Text(label)
                         .font(.caption)
@@ -687,32 +680,10 @@ private struct AppIcon: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder private var artwork: some View {
-        switch art {
-        case .calendar:
-            // shows todays actual date like the real icon
-            ZStack {
-                Color.white
-                VStack(spacing: -2) {
-                    Text(Date().formatted(.dateTime.weekday(.abbreviated)))
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color(white: 0.45))
-                    Text(Date().formatted(.dateTime.day()))
-                        .font(.system(size: 32, weight: .light))
-                        .foregroundStyle(.black)
-                }
-            }
-        case .play:
-            Image(systemName: "play.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(.white)
-                .frame(width: 62, height: 62)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 15))
-        default:
-            Image("icon.\(art.rawValue)")
-                .resizable()
-                .scaledToFill()
-        }
+    private var artwork: some View {
+        Image("icon.\(art.rawValue)")
+            .resizable()
+            .scaledToFit()
     }
 }
 
