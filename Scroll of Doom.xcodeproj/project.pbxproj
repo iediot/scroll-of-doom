@@ -20,6 +20,7 @@
 				GameArt.swift,
 				GameScene.sks,
 				GameScene.swift,
+				LevelEditor.swift,
 				LevelPageView.swift,
 				LevelScene.swift,
 			);

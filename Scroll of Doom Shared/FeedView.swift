@@ -72,6 +72,7 @@ struct FeedView: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var heldDirection: CGFloat = 0
     @State private var openApp: String?
+    @State private var showCreator = false
     @State private var loading = false
     @State private var showGame = false
     @State private var screenSize: CGSize = .zero
@@ -119,6 +120,9 @@ struct FeedView: View {
                     } else if choosingSlot {
                         slotScreen
                             .transition(Self.screenIn)
+                    } else if showCreator {
+                        MyLevelsView(onExit: { showCreator = false })
+                            .transition(Self.screenIn)
                     } else if let openApp {
                         appScreen(openApp)
                             .transition(Self.screenIn)
@@ -132,6 +136,7 @@ struct FeedView: View {
             .animation(Self.screenSpring, value: loading)
             .animation(Self.screenSpring, value: choosingSlot)
             .animation(Self.screenSpring, value: openApp)
+            .animation(Self.screenSpring, value: showCreator)
             .onAppear {
                 screenSize = geo.size
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -462,7 +467,7 @@ struct FeedView: View {
                     AppIcon(art: .play, label: "PLAY") { choosingSlot = true }
                     AppIcon(art: .messages, label: "Messages")
                     AppIcon(art: .camera, label: "Camera")
-                    AppIcon(art: .photos, label: "Photos")
+                    AppIcon(art: .photos, label: "Photos") { showCreator = true }
                     AppIcon(art: .clock, label: "Clock")
                     AppIcon(art: .calendar, label: "Calendar")
                     AppIcon(art: .maps, label: "Maps")

@@ -1,6 +1,53 @@
 import SpriteKit
 import UIKit
 
+// a designed level, positions are fractions of the screen so they carry across
+// devices, y is from the bottom like spritekit
+struct PlatformData: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var x: Double        // center, fraction of width
+    var y: Double        // fraction of height from the bottom
+    var w: Double        // length, fraction of screen width
+    var vertical: Bool?  // optional so old saves still decode
+    var isVertical: Bool { vertical == true }
+}
+
+struct LevelData: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String = "untitled"
+    var platforms: [PlatformData] = []
+    var heartX: Double = 0.5
+    var heartY: Double = 0.24
+}
+
+enum CustomLevelStore {
+    private static let key = "customLevels"
+
+    static func load() -> [LevelData] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let levels = try? JSONDecoder().decode([LevelData].self, from: data)
+        else { return [] }
+        return levels
+    }
+
+    static func save(_ levels: [LevelData]) {
+        if let data = try? JSONEncoder().encode(levels) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    static func encode(_ level: LevelData) -> String {
+        (try? JSONEncoder().encode(level))?.base64EncodedString() ?? ""
+    }
+
+    static func decode(_ code: String) -> LevelData? {
+        guard let data = Data(base64Encoded: code.trimmingCharacters(in: .whitespacesAndNewlines)),
+              var level = try? JSONDecoder().decode(LevelData.self, from: data) else { return nil }
+        level.id = UUID()
+        return level
+    }
+}
+
 final class LevelScene: SKScene {
 
     private let moveSpeed: CGFloat = 260
@@ -22,6 +69,8 @@ final class LevelScene: SKScene {
     var levelIndex = 0
     var isAdLevel = false
     var isBossLevel = false
+    // when set the scene renders this designed layout instead of the built in one
+    var customLevel: LevelData?
     var adPowerup: Powerup = .doubleJump
     var extraJumps = 0
     var hasDash = false
@@ -129,7 +178,10 @@ final class LevelScene: SKScene {
     }
 
     private var keySpawnPosition: CGPoint {
-        CGPoint(x: 60, y: boxBottomY + 60)
+        if let c = customLevel {
+            return CGPoint(x: CGFloat(c.heartX) * size.width, y: CGFloat(c.heartY) * size.height)
+        }
+        return CGPoint(x: 60, y: boxBottomY + 60)
     }
 
     // the ellipsis in the rail, boss levels deliver the broken heart there
@@ -302,38 +354,58 @@ final class LevelScene: SKScene {
         hatchNode = hatch
     }
 
-    // 52pt spacing stays under the ~65pt jump height
     private func buildPlatforms() {
         platformsNode?.removeFromParent()
-
         let node = SKNode()
         node.zPosition = 5
 
-        let keyY = keyPosition.y
-        let width: CGFloat = 70
-        var y = boxBottomY + 52
-        var i = 0
-        while y < keyY - 35 {
-            let cx = i % 2 == 0 ? size.width - 75 : size.width - 160
-            let a = CGPoint(x: cx - width / 2, y: y)
-            let b = CGPoint(x: cx + width / 2, y: y)
-            let path = CGMutablePath()
-            path.move(to: a)
-            path.addLine(to: b)
-            let line = SKShapeNode(path: path)
-            line.strokeColor = .white
-            line.lineWidth = 3
-            line.lineCap = .round
-            let body = SKPhysicsBody(edgeFrom: a, to: b)
-            body.categoryBitMask = Cat.ground
-            line.physicsBody = body
-            node.addChild(line)
-            y += 52
-            i += 1
+        if let c = customLevel {
+            for p in c.platforms {
+                let cx = CGFloat(p.x) * size.width
+                let cy = CGFloat(p.y) * size.height
+                let len = CGFloat(p.w) * size.width
+                if p.isVertical {
+                    addSegment(node: node, a: CGPoint(x: cx, y: cy - len / 2),
+                               b: CGPoint(x: cx, y: cy + len / 2))
+                } else {
+                    addSegment(node: node, a: CGPoint(x: cx - len / 2, y: cy),
+                               b: CGPoint(x: cx + len / 2, y: cy))
+                }
+            }
+        } else {
+            // built in zigzag, 52pt spacing stays under the ~65pt jump height
+            let keyY = keyPosition.y
+            var y = boxBottomY + 52
+            var i = 0
+            while y < keyY - 35 {
+                let cx = i % 2 == 0 ? size.width - 75 : size.width - 160
+                addPlatform(node: node, cx: cx, y: y, width: 70)
+                y += 52
+                i += 1
+            }
         }
 
         addChild(node)
         platformsNode = node
+    }
+
+    private func addPlatform(node: SKNode, cx: CGFloat, y: CGFloat, width: CGFloat) {
+        addSegment(node: node, a: CGPoint(x: cx - width / 2, y: y),
+                   b: CGPoint(x: cx + width / 2, y: y))
+    }
+
+    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint) {
+        let path = CGMutablePath()
+        path.move(to: a)
+        path.addLine(to: b)
+        let line = SKShapeNode(path: path)
+        line.strokeColor = .white
+        line.lineWidth = 3
+        line.lineCap = .round
+        let body = SKPhysicsBody(edgeFrom: a, to: b)
+        body.categoryBitMask = Cat.ground
+        line.physicsBody = body
+        node.addChild(line)
     }
 
     private func addHeartKey() {
@@ -619,6 +691,12 @@ final class LevelScene: SKScene {
 
     func beginEntry() {
         player?.physicsBody?.isDynamic = true
+    }
+
+    // rebuilds the level from scratch, used to restart a playtest
+    func reload() {
+        pendingRestore = nil
+        buildLevel()
     }
 
     override func update(_ currentTime: TimeInterval) {
