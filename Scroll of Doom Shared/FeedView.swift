@@ -464,7 +464,7 @@ struct FeedView: View {
                 .clipped()
                 .ignoresSafeArea()
             VStack(spacing: 30) {
-                widget
+                // widget    hidden for now, just the apps over the wallpaper
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4),
                           spacing: 22) {
                     AppIcon(art: .settings, label: "Settings") { openApp = "settings" }
@@ -670,8 +670,8 @@ private struct AppIcon: View {
                     .frame(width: 62, height: 62)
                 if let label {
                     Text(label)
-                        .font(.caption)
-                        .foregroundStyle(.white)
+                        .font(.caption).bold()
+                        .foregroundStyle(.black)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 }
