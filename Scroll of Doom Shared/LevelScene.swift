@@ -78,8 +78,8 @@ final class LevelScene: SKScene {
     // when set the scene renders this designed layout instead of the built in one
     var customLevel: LevelData?
     var adPowerup: Powerup = .doubleJump
-    var extraJumps = 0
-    var hasDash = false
+    var extraJumps = 0 { didSet { updateWings() } }
+    var hasDash = false { didSet { updateShoes() } }
     // box floor sits on top of the tab bar
     var bottomInset: CGFloat = 0
     var onFellThrough: ((CGFloat) -> Void)?
@@ -95,10 +95,26 @@ final class LevelScene: SKScene {
     // small fixed hitbox, centered horizontally and sitting at the models feet
     private let hitW: CGFloat = 18
     private let hitH: CGFloat = 22
+    // stacked sprite layers, drawn bigger than the hitbox
+    private let spriteW: CGFloat = 40
+    private var spriteH: CGFloat { spriteW * 600 / 512 }
+    private let heartSize: CGFloat = 38   // the pickup heart, held one is a touch smaller
+    // platforms and walls, a grayer bar with a black rim a third of its width each side
+    private let barWidth: CGFloat = 3
+    private let barColor = UIColor(white: 0.8, alpha: 1)
+    private var barOutline: CGFloat { barWidth + 2 * barWidth / 3 }
 
     private var player: SKNode!
     private var squishBottom: SKNode!   // squishes scale from the cubes feet, purely visual
-    private var eyes: [SKShapeNode] = []
+    private var walkNode: SKNode!       // inner node for the continuous walk bob
+    private var walking = false
+    private var bodySprite: SKSpriteNode!   // sitting or holding stance, no face
+    private var eyesSprite: SKSpriteNode!   // eyes with baked in glare
+    private var mouthSprite: SKSpriteNode!  // swaps between open, neutral, happy
+    private var heldHeart: SKSpriteNode!    // shown above the head while carrying the key
+    private var shoesSprite: SKSpriteNode!  // shown at the feet once dash is unlocked
+    private var wingsSprite: SKSpriteNode!  // drawn behind the body with double jump
+    private var wasGrounded = true
     private var descentSpeed: CGFloat = 0
     private var prevVelY: CGFloat = 0
     private var border: SKShapeNode?
@@ -198,41 +214,65 @@ final class LevelScene: SKScene {
 
     private func buildLevel() {
         removeAllChildren()
+        addWallpaper()
         let restore = pendingRestore
         pendingRestore = nil
         hasKey = restore?.hasKey ?? false
         hatchUnlocked = restore?.hatchOpen ?? false
         bossDelivered = restore?.hatchOpen ?? false
 
-        let cube = CGSize(width: modelSize, height: modelSize)
         player = SKNode()
         player.zPosition = 10
         player.physicsBody = makeBody()
         addChild(player)
 
-        // one node that scales from the cubes feet, dropped a few px so the
-        // model rests flush on the ground instead of floating above the hitbox
+        // all the model layers ride one node that scales from the feet for squish,
+        // dropped a couple px so it rests flush on the ground
         squishBottom = SKNode()
-        squishBottom.position = CGPoint(x: 0, y: -cube.height / 2 - 2)
+        squishBottom.position = CGPoint(x: 0, y: -modelSize / 2 - 2)
         player.addChild(squishBottom)
 
-        let visual = SKShapeNode(rect: CGRect(x: -cube.width / 2, y: 0,
-                                              width: cube.width, height: cube.height),
-                                 cornerRadius: 7)
-        visual.fillColor = .white
-        visual.strokeColor = .white
-        visual.lineWidth = 1.5
-        squishBottom.addChild(visual)
+        // an inner node just for the continuous walk bob, so it composes with squish
+        walkNode = SKNode()
+        squishBottom.addChild(walkNode)
 
-        eyes = []
-        for ex in [-6.0, 6.0] {
-            let eye = SKShapeNode(circleOfRadius: 3)
-            eye.fillColor = .black
-            eye.strokeColor = .clear
-            eye.position = CGPoint(x: ex, y: cube.height / 2 + 4)
-            squishBottom.addChild(eye)
-            eyes.append(eye)
+        let spriteSize = CGSize(width: spriteW, height: spriteH)
+        func layer(_ name: String, _ z: CGFloat) -> SKSpriteNode {
+            let n = SKSpriteNode(texture: SKTexture(imageNamed: name))
+            n.size = spriteSize
+            n.anchorPoint = CGPoint(x: 0.5, y: 0)   // bottom center sits at the feet
+            n.zPosition = z
+            walkNode.addChild(n)
+            return n
         }
+        // wings sit behind everything, their own wider canvas
+        wingsSprite = SKSpriteNode(texture: SKTexture(imageNamed: "cube.wings"))
+        wingsSprite.size = CGSize(width: spriteW * 1.5, height: spriteW * 1.5 * 600 / 700)
+        wingsSprite.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        wingsSprite.position = CGPoint(x: 0, y: spriteH * 0.62)
+        wingsSprite.zPosition = -1
+        walkNode.addChild(wingsSprite)
+
+        bodySprite = layer("cube.sitting", 0)
+        shoesSprite = layer("cube.shoes", 0.5)   // over the body, at the feet
+        shoesSprite.position.y = -1              // sit them a touch lower
+        eyesSprite = layer("cube.eyes", 1)
+        mouthSprite = layer("cube.mouth.neutral", 1)
+
+        heldHeart = SKSpriteNode(texture: SKTexture(imageNamed: "cube.heart"))
+        heldHeart.size = CGSize(width: heartSize * 0.85, height: heartSize * 0.85)
+        heldHeart.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        heldHeart.position = CGPoint(x: 0, y: spriteH * 0.9)
+        heldHeart.zPosition = 1
+        heldHeart.isHidden = true
+        walkNode.addChild(heldHeart)
+
+        updateStance()
+        updateShoes()
+        updateWings()
+        walking = false
+        wasGrounded = false   // it drops in from the air
+        setMouth(airborne: true)
 
         layoutBox()
         addHeartSlot()
@@ -253,6 +293,18 @@ final class LevelScene: SKScene {
             respawnCube()
         }
         lastLayoutSize = size
+    }
+
+    // square ruled paper behind everything, anchored to the left so the right
+    // side only appears when the screen is wider than tall
+    private func addWallpaper() {
+        let side = max(size.width, size.height)
+        let bg = SKSpriteNode(texture: SKTexture(imageNamed: "level.wallpaper"))
+        bg.size = CGSize(width: side, height: side)
+        bg.anchorPoint = CGPoint(x: 0, y: 0.5)
+        bg.position = CGPoint(x: 0, y: size.height / 2)
+        bg.zPosition = -100
+        addChild(bg)
     }
 
     private func addHeartSlot() {
@@ -315,7 +367,7 @@ final class LevelScene: SKScene {
 
         // physics stays, visually hidden
         let shape = SKShapeNode(path: path)
-        shape.strokeColor = .gameBG
+        shape.strokeColor = .clear   // walls and top are invisible, physics only
         shape.lineWidth = 3
         shape.lineCap = .round
         shape.lineJoin = .round
@@ -346,10 +398,19 @@ final class LevelScene: SKScene {
         let path = CGMutablePath()
         path.move(to: CGPoint(x: 0, y: y))
         path.addLine(to: CGPoint(x: size.width, y: y))
+
+        let outline = SKShapeNode(path: path)
+        outline.strokeColor = .black
+        outline.lineWidth = barOutline
+        outline.lineCap = .round
+        outline.zPosition = 0
+        hatch.addChild(outline)
+
         let line = SKShapeNode(path: path)
-        line.strokeColor = .white
-        line.lineWidth = 3
+        line.strokeColor = barColor
+        line.lineWidth = barWidth
         line.lineCap = .round
+        line.zPosition = 1
         hatch.addChild(line)
 
         let body = SKPhysicsBody(edgeFrom: CGPoint(x: edgeInset, y: y),
@@ -405,10 +466,20 @@ final class LevelScene: SKScene {
         let path = CGMutablePath()
         path.move(to: a)
         path.addLine(to: b)
+
+        // wider black stroke behind, so the rim shows all the way around the grayer bar
+        let outline = SKShapeNode(path: path)
+        outline.strokeColor = .black
+        outline.lineWidth = barOutline
+        outline.lineCap = .round
+        outline.zPosition = 0
+        node.addChild(outline)
+
         let line = SKShapeNode(path: path)
-        line.strokeColor = .white
-        line.lineWidth = 3
+        line.strokeColor = barColor
+        line.lineWidth = barWidth
         line.lineCap = .round
+        line.zPosition = 1
         let body = SKPhysicsBody(edgeFrom: a, to: b)
         body.categoryBitMask = category
         line.physicsBody = body
@@ -420,9 +491,13 @@ final class LevelScene: SKScene {
 
         let key = SKNode()
         key.zPosition = 8
-        key.addChild(SKSpriteNode(texture: isBossLevel
-            ? GameArt.brokenHeartTexture()
-            : GameArt.heartTexture(filled: true)))
+        if isBossLevel {
+            key.addChild(SKSpriteNode(texture: GameArt.brokenHeartTexture()))
+        } else {
+            let h = SKSpriteNode(texture: SKTexture(imageNamed: "cube.heart"))
+            h.size = CGSize(width: heartSize, height: heartSize)
+            key.addChild(h)
+        }
         key.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 20)
@@ -440,7 +515,16 @@ final class LevelScene: SKScene {
 
         let node = SKNode()
         node.zPosition = 8
-        node.addChild(SKSpriteNode(texture: GameArt.powerupTexture(adPowerup)))
+        // dash pickup is the shoes, double jump pickup is the wings
+        if adPowerup == .dash {
+            let shoes = SKSpriteNode(texture: SKTexture(imageNamed: "dash.item"))
+            shoes.size = CGSize(width: heartSize, height: heartSize)
+            node.addChild(shoes)
+        } else {
+            let w = SKSpriteNode(texture: SKTexture(imageNamed: "cube.wings"))
+            w.size = CGSize(width: heartSize * 1.4, height: heartSize * 1.4 * 600 / 700)
+            node.addChild(w)
+        }
         node.position = keySpawnPosition
 
         let body = SKPhysicsBody(circleOfRadius: 22)
@@ -456,6 +540,7 @@ final class LevelScene: SKScene {
     private func openHatch() {
         guard !hatchUnlocked else { return }
         hatchUnlocked = true
+        updateStance()   // heart is deposited, stop holding it
         onHatchOpened?()
         guard let hatch = hatchNode else { return }
         hatch.physicsBody = nil
@@ -529,36 +614,46 @@ final class LevelScene: SKScene {
 
         return renderer.image { ctx in
             let cg = ctx.cgContext
-            // a touch of gray so cards read apart from each other and the black app
+            // gray fallback then the ruled paper wallpaper, square anchored left
             UIColor(white: 0.16, alpha: 1).setFill()
             cg.fill(CGRect(origin: .zero, size: imgSize))
+            if let wp = UIImage(named: "level.wallpaper") {
+                let sd = max(imgSize.width, imgSize.height)
+                wp.draw(in: CGRect(x: 0, y: (imgSize.height - sd) / 2, width: sd, height: sd))
+            }
 
             cg.setLineCap(.round)
 
-            // platforms
-            cg.setStrokeColor(UIColor.white.cgColor)
-            cg.setLineWidth(3 * scale)
-            for node in platformsNode?.children ?? [] {
-                guard let bb = (node as? SKShapeNode)?.path?.boundingBoxOfPath else { continue }
-                cg.move(to: pt(CGPoint(x: bb.minX, y: bb.midY)))
-                cg.addLine(to: pt(CGPoint(x: bb.maxX, y: bb.midY)))
+            // a black rim under a grayer bar, matching the game
+            func drawBar(_ a: CGPoint, _ b: CGPoint) {
+                cg.setStrokeColor(UIColor.black.cgColor)
+                cg.setLineWidth(barOutline * scale)
+                cg.move(to: a); cg.addLine(to: b); cg.strokePath()
+                cg.setStrokeColor(barColor.cgColor)
+                cg.setLineWidth(barWidth * scale)
+                cg.move(to: a); cg.addLine(to: b); cg.strokePath()
             }
-            cg.strokePath()
 
+            // platforms and walls
+            for node in platformsNode?.children ?? [] {
+                guard let shape = node as? SKShapeNode, shape.physicsBody != nil,
+                      let bb = shape.path?.boundingBoxOfPath else { continue }
+                if bb.width >= bb.height {
+                    drawBar(pt(CGPoint(x: bb.minX, y: bb.midY)), pt(CGPoint(x: bb.maxX, y: bb.midY)))
+                } else {
+                    drawBar(pt(CGPoint(x: bb.midX, y: bb.minY)), pt(CGPoint(x: bb.midX, y: bb.maxY)))
+                }
+            }
             // locked gate spans the floor
             if !hatchUnlocked {
-                cg.setStrokeColor(UIColor.white.cgColor)
-                cg.setLineWidth(3 * scale)
-                cg.move(to: pt(CGPoint(x: 0, y: boxBottomY)))
-                cg.addLine(to: pt(CGPoint(x: size.width, y: boxBottomY)))
-                cg.strokePath()
+                drawBar(pt(CGPoint(x: 0, y: boxBottomY)), pt(CGPoint(x: size.width, y: boxBottomY)))
             }
 
             // collectible item
             for node in [heart, wings].compactMap({ $0 }) {
                 guard let sprite = node.children.first as? SKSpriteNode,
                       let cgImg = sprite.texture?.cgImage() else { continue }
-                let sz = sprite.texture!.size()
+                let sz = sprite.size
                 let c = pt(node.position)
                 UIImage(cgImage: cgImg).draw(in: CGRect(x: c.x - sz.width * scale / 2,
                                                         y: c.y - sz.height * scale / 2,
@@ -566,17 +661,31 @@ final class LevelScene: SKScene {
                                                         height: sz.height * scale))
             }
 
-            // cube with its eyes
-            let side = 30 * scale
-            let c = pt(player.position)
-            let cubeRect = CGRect(x: c.x - side / 2, y: c.y - side / 2, width: side, height: side)
-            UIColor.white.setFill()
-            UIBezierPath(roundedRect: cubeRect, cornerRadius: 7 * scale).fill()
-            UIColor.black.setFill()
-            for ex in [-6.0, 6.0] {
-                let e = pt(CGPoint(x: player.position.x + ex, y: player.position.y + 4))
-                cg.fillEllipse(in: CGRect(x: e.x - 3 * scale, y: e.y - 3 * scale,
-                                          width: 6 * scale, height: 6 * scale))
+            // the layered player model, drawn from the feet up
+            let feet = pt(CGPoint(x: player.position.x, y: player.position.y - modelSize / 2 - 2))
+            let holding = hasKey && !hatchUnlocked
+            // centered layer (wings, held heart)
+            func drawCentered(_ name: String, w: CGFloat, h: CGFloat, cy: CGFloat) {
+                UIImage(named: name)?.draw(in: CGRect(x: feet.x - w * scale / 2, y: cy - h * scale / 2,
+                                                      width: w * scale, height: h * scale))
+            }
+            // bottom anchored body layer
+            func drawBody(_ name: String) {
+                UIImage(named: name)?.draw(in: CGRect(x: feet.x - spriteW * scale / 2,
+                                                      y: feet.y - spriteH * scale,
+                                                      width: spriteW * scale, height: spriteH * scale))
+            }
+            if extraJumps > 0 {
+                let ww = spriteW * 1.5
+                drawCentered("cube.wings", w: ww, h: ww * 600 / 700, cy: feet.y - spriteH * 0.62 * scale)
+            }
+            drawBody(holding ? "cube.holding" : "cube.sitting")
+            if hasDash { drawBody("cube.shoes") }
+            drawBody("cube.eyes")
+            drawBody("cube.mouth.neutral")
+            if holding {
+                drawCentered("cube.heart", w: heartSize * 0.85, h: heartSize * 0.85,
+                             cy: feet.y - spriteH * 0.9 * scale)
             }
         }
     }
@@ -584,7 +693,7 @@ final class LevelScene: SKScene {
 
     func setMove(_ direction: CGFloat) {
         moveDirection = direction
-        if direction != 0 { lastFacing = direction }
+        if direction != 0 { lastFacing = direction; faceShoes(direction) }
         lookEyes(direction)
     }
 
@@ -595,14 +704,64 @@ final class LevelScene: SKScene {
         dashEndTime = sceneTime + dashDuration
         dashReadyTime = sceneTime + dashCooldown
         dashSquish()
+        faceShoes(dashDirection)
         lookEyes(dashDirection, amount: 3.5)
     }
 
-    // eyes glance toward the direction of travel
-    private func lookEyes(_ dir: CGFloat, amount: CGFloat = 2.2) {
-        for (i, eye) in eyes.enumerated() {
-            let baseX: CGFloat = i == 0 ? -6 : 6
-            eye.run(.moveTo(x: baseX + dir * amount, duration: 0.1), withKey: "look")
+    // the face and shoes glance toward the direction of travel, the wings trail opposite
+    private func lookEyes(_ dir: CGFloat, amount: CGFloat = 2.6) {
+        let x = dir * amount
+        eyesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
+        mouthSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
+        shoesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
+        wingsSprite?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
+    }
+
+    // wings only show once double jump is available
+    private func updateWings() {
+        wingsSprite?.isHidden = extraJumps <= 0
+    }
+
+    // open mouth in the air, a random neutral or happy mouth once back on the ground
+    private func setMouth(airborne: Bool) {
+        let name = airborne ? "cube.mouth.open"
+                            : (Bool.random() ? "cube.mouth.neutral" : "cube.mouth.happy")
+        mouthSprite?.texture = SKTexture(imageNamed: name)
+    }
+
+    // shoes are drawn facing right, mirror them when heading left
+    private func faceShoes(_ dir: CGFloat) {
+        shoesSprite?.xScale = dir < 0 ? -1 : 1
+    }
+
+    // shoes only show once dash is available
+    private func updateShoes() {
+        shoesSprite?.isHidden = !hasDash
+    }
+
+    // sitting normally, holding the heart over its head while carrying the key
+    private func updateStance() {
+        guard let bodySprite, let heldHeart else { return }
+        let holding = hasKey && !hatchUnlocked
+        bodySprite.texture = SKTexture(imageNamed: holding ? "cube.holding" : "cube.sitting")
+        heldHeart.isHidden = !holding
+    }
+
+    // a gentle continuous squash and stretch while walking on the ground
+    private func setWalking(_ on: Bool) {
+        guard on != walking, let walkNode else { return }
+        walking = on
+        if on {
+            let down = SKAction.group([.scaleX(to: 1.06, duration: 0.15), .scaleY(to: 0.9, duration: 0.15)])
+            down.timingMode = .easeInEaseOut
+            let up = SKAction.group([.scaleX(to: 1, duration: 0.15), .scaleY(to: 1, duration: 0.15)])
+            up.timingMode = .easeInEaseOut
+            walkNode.run(.repeatForever(.sequence([down, up])), withKey: "walk")
+        } else {
+            walkNode.removeAction(forKey: "walk")
+            let ret = SKAction.group([.scaleX(to: 1, duration: 0.1), .scaleY(to: 1, duration: 0.1)])
+            ret.timingMode = .easeOut
+            walkNode.run(ret)
         }
     }
 
@@ -784,6 +943,13 @@ final class LevelScene: SKScene {
             // touched the floor for the first time, everything turns solid
             if entryPhasing { beginEntryPhasing(false) }
         }
+        // open mouth in the air, reroll neutral or happy the moment it lands
+        if grounded != wasGrounded {
+            setMouth(airborne: !grounded)
+            wasGrounded = grounded
+        }
+        // bob while walking on the ground, but not mid dash or jump
+        setWalking(grounded && moveDirection != 0 && !dashing && !entryPhasing)
         if body.velocity.dy < -60 {
             descentSpeed = min(descentSpeed, body.velocity.dy)
         }
@@ -885,6 +1051,7 @@ extension LevelScene: SKPhysicsContactDelegate {
             if let node = other.node, node == heart {
                 heart = nil
                 hasKey = true
+                updateStance()
                 onCollectHeart?()
                 node.run(.sequence([
                     .group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),

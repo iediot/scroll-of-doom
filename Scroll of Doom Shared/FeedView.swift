@@ -457,10 +457,11 @@ struct FeedView: View {
     private func homeScreen(size: CGSize) -> some View {
         ZStack {
             Color.gameBG
-            Image("wallpaper")
+            // same ruled paper the levels use, square art anchored to the left
+            Image("level.wallpaper")
                 .resizable()
                 .scaledToFill()
-                .frame(width: size.width, height: size.height)
+                .frame(width: size.width, height: size.height, alignment: .leading)
                 .clipped()
                 .ignoresSafeArea()
             VStack(spacing: 30) {

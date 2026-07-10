@@ -250,11 +250,11 @@ private struct LevelPreview: View {
     private struct Fit { let s, ox, oy: CGFloat }
 
     private func fit(_ size: CGSize) -> Fit {
-        // fill the square and crop the overflow rather than letterboxing the phone shape,
-        // shifted up a touch so the level sits a little higher in the tile
+        // fill the square and crop the overflow, with the gate pinned to the bottom
+        // so the useless strip below it is dropped
         let s = max(size.width / ref.width, size.height / ref.height)
         return Fit(s: s, ox: (size.width - ref.width * s) / 2,
-                   oy: (size.height - ref.height * s) / 2 - size.height * 0.06)
+                   oy: size.height - (ref.height - GameRef.barHeight) * s)
     }
 
     var body: some View {
@@ -263,28 +263,61 @@ private struct LevelPreview: View {
             let hp = max(7, 22 * f.s)
             ZStack(alignment: .topLeading) {
                 Color(white: 0.16)
+                // same ruled paper wallpaper the game uses, anchored left
+                Image("level.wallpaper").resizable().scaledToFill()
+                    .frame(width: g.size.width, height: g.size.height, alignment: .leading)
                 Canvas { ctx, _ in draw(ctx, f) }
 
                 // the placed heart key
-                Image(systemName: "heart.fill").font(.system(size: hp)).foregroundStyle(.white)
+                Image("cube.heart").resizable().scaledToFit().frame(width: hp * 1.3, height: hp * 1.3)
                     .position(point(CGFloat(level.heartX) * ref.width, CGFloat(level.heartY) * ref.height, f))
+
+                playerModel(f)
             }
             .frame(width: g.size.width, height: g.size.height)
             .clipped()
         }
     }
 
+    // the full character, powerup gear included, standing on the gate
+    private func playerModel(_ f: Fit) -> some View {
+        let mw = 40 * f.s, mh = mw * 600 / 512
+        let ww = 60 * f.s, wh = ww * 600 / 700
+        let feet = point(ref.width / 2, GameRef.barHeight, f)
+        return ZStack {
+            if level.powerups.contains(.doubleJump) {
+                Image("cube.wings").resizable().scaledToFit()
+                    .frame(width: ww, height: wh).offset(y: -mh * 0.12)
+            }
+            Image("cube.sitting").resizable().scaledToFit().frame(width: mw, height: mh)
+            if level.powerups.contains(.dash) {
+                Image("cube.shoes").resizable().scaledToFit().frame(width: mw, height: mh)
+            }
+            Image("cube.eyes").resizable().scaledToFit().frame(width: mw, height: mh)
+            Image("cube.mouth.neutral").resizable().scaledToFit().frame(width: mw, height: mh)
+        }
+        .frame(width: mw, height: mh)
+        .position(x: feet.x, y: feet.y - mh / 2)
+    }
+
     private func draw(_ ctx: GraphicsContext, _ f: Fit) {
         let line = max(1.2, 3 * f.s)
+        let rim = line * 5 / 3   // black outline all around, a third of the bar each side
         // the side walls and top are black in game, only the gate and platforms show
         let tl = point(edgeInset, ref.height - edgeInset, f)
         let br = point(ref.width - edgeInset, GameRef.barHeight, f)
+
+        // draws a bar as a black rim under a grayer core
+        func bar(_ path: Path, cap: CGLineCap) {
+            ctx.stroke(path, with: .color(.black), style: StrokeStyle(lineWidth: rim, lineCap: cap))
+            ctx.stroke(path, with: .color(Color(white: 0.8)), style: StrokeStyle(lineWidth: line, lineCap: cap))
+        }
 
         // the full width gate that is the floor
         var gate = Path()
         gate.move(to: CGPoint(x: tl.x, y: br.y))
         gate.addLine(to: CGPoint(x: br.x, y: br.y))
-        ctx.stroke(gate, with: .color(.white), lineWidth: line)
+        bar(gate, cap: .butt)
 
         // platforms and walls
         for p in level.platforms {
@@ -297,7 +330,7 @@ private struct LevelPreview: View {
             } else {
                 seg.move(to: point(cx - len / 2, cy, f)); seg.addLine(to: point(cx + len / 2, cy, f))
             }
-            ctx.stroke(seg, with: .color(.white), style: StrokeStyle(lineWidth: line, lineCap: .round))
+            bar(seg, cap: .round)
         }
     }
 }
@@ -344,7 +377,7 @@ struct LevelEditorView: View {
 
                 // gate line and the empty heart slot, drawn exactly where the game puts them
                 Rectangle().fill(.white.opacity(0.35)).frame(height: 1).position(x: w / 2, y: barY)
-                Image(systemName: "heart").font(.system(size: 28)).foregroundStyle(.white.opacity(0.45))
+                Image("cube.heart").resizable().scaledToFit().frame(width: 34, height: 34).opacity(0.4)
                     .position(x: w - GameRef.slotRightInset, y: GameRef.slotTopOffset)
 
                 gridOverlay(w: w, h: h)
@@ -502,8 +535,8 @@ struct LevelEditorView: View {
                     platformPaletteItem(vertical: false, w: w, h: h)
                     platformPaletteItem(vertical: true, w: w, h: h)
 
-                    Image(systemName: "heart.fill").font(.system(size: 26))
-                        .foregroundStyle(heartPlaced ? Color(white: 0.35) : .white)
+                    Image("cube.heart").resizable().scaledToFit().frame(width: 30, height: 30)
+                        .opacity(heartPlaced ? 0.3 : 1)
                         .frame(width: 64, height: 44).contentShape(Rectangle())
                         .allowsHitTesting(!heartPlaced)
                         .gesture(DragGesture(coordinateSpace: .named("canvas"))
@@ -525,8 +558,12 @@ struct LevelEditorView: View {
 
     // a draggable platform icon in the palette, horizontal or vertical
     private func platformPaletteItem(vertical: Bool, w: CGFloat, h: CGFloat) -> some View {
-        Capsule().fill(.white)
-            .frame(width: vertical ? 4 : 46, height: vertical ? 40 : 4)
+        ZStack {
+            Capsule().fill(.black)
+                .frame(width: vertical ? 7 : 49, height: vertical ? 43 : 7)
+            Capsule().fill(Color(white: 0.8))
+                .frame(width: vertical ? 4 : 46, height: vertical ? 40 : 4)
+        }
             .frame(width: 56, height: 46).contentShape(Rectangle())
             .gesture(DragGesture(coordinateSpace: .named("canvas"))
                 .onChanged { v in
@@ -553,8 +590,13 @@ struct LevelEditorView: View {
         let cy = (1 - CGFloat(p.wrappedValue.y)) * h - CGFloat(p.wrappedValue.offY)
         let len = CGFloat(p.wrappedValue.w) * w
         let vert = p.wrappedValue.isVertical
-        return Capsule().fill(isSel ? Color.yellow : .white)
-            .frame(width: vert ? 3 : len, height: vert ? len : 3)
+        return ZStack {
+            // black rim all around, grayer bar on top, matching the game
+            Capsule().fill(.black)
+                .frame(width: vert ? 5 : len + 2, height: vert ? len + 2 : 5)
+            Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
+                .frame(width: vert ? 3 : len, height: vert ? len : 3)
+        }
             .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
             .contentShape(Rectangle())
             .position(x: cx, y: cy)
@@ -609,8 +651,8 @@ struct LevelEditorView: View {
 
     private func heartView(w: CGFloat, h: CGFloat) -> some View {
         let cx = CGFloat(level.heartX) * w, cy = (1 - CGFloat(level.heartY)) * h
-        return Image(systemName: "heart.fill")
-            .font(.system(size: 28)).foregroundStyle(heartSelected ? .yellow : .white)
+        return Image("cube.heart").resizable().scaledToFit().frame(width: 34, height: 34)
+            .colorMultiply(heartSelected ? .yellow : .white)
             .shadow(color: .black.opacity(0.6), radius: 3)
             .frame(width: 44, height: 44).contentShape(Rectangle())
             .position(x: cx, y: cy)
