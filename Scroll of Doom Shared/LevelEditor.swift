@@ -429,7 +429,9 @@ struct LevelEditorView: View {
                     level.platforms[i].y = fy(s.y, H)
                 }
             )
-            let maxOff = max(0, Int(canvasSize.width / gridCols) - 1)
+            // one step per pixel across a whole cell, so maxing it lines up with the
+            // next tile instead of leaving a couple unreachable pixels
+            let maxOff = max(0, Int((canvasSize.width / gridCols).rounded()))
             let ox = Binding<Int>(
                 get: { Int(level.platforms[i].offX) },
                 set: { level.platforms[i].ox = Double($0) }

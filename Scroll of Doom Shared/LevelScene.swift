@@ -444,8 +444,18 @@ final class LevelScene: SKScene {
                 let cy = CGFloat(p.y) * size.height + CGFloat(p.offY)
                 let len = CGFloat(p.w) * size.width
                 if p.isVertical {
+                    // visual only, then a thin solid body the wall's own width so its
+                    // top holds the player up through normal physics, no jitter, no ledge
                     addSegment(node: node, a: CGPoint(x: cx, y: cy - len / 2),
-                               b: CGPoint(x: cx, y: cy + len / 2), category: Cat.platform)
+                               b: CGPoint(x: cx, y: cy + len / 2), category: Cat.platform, physics: false)
+                    let wall = SKNode()
+                    wall.position = CGPoint(x: cx, y: cy)
+                    let wb = SKPhysicsBody(rectangleOf: CGSize(width: barWidth, height: len))
+                    wb.isDynamic = false
+                    wb.categoryBitMask = Cat.platform
+                    wb.usesPreciseCollisionDetection = true
+                    wall.physicsBody = wb
+                    node.addChild(wall)
                 } else {
                     addSegment(node: node, a: CGPoint(x: cx - len / 2, y: cy),
                                b: CGPoint(x: cx + len / 2, y: cy), category: Cat.platform)
@@ -473,7 +483,8 @@ final class LevelScene: SKScene {
                    b: CGPoint(x: cx + width / 2, y: y))
     }
 
-    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint, category: UInt32 = Cat.ground) {
+    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint,
+                            category: UInt32 = Cat.ground, physics: Bool = true) {
         let path = CGMutablePath()
         path.move(to: a)
         path.addLine(to: b)
@@ -491,9 +502,11 @@ final class LevelScene: SKScene {
         line.lineWidth = barWidth
         line.lineCap = .round
         line.zPosition = 1
-        let body = SKPhysicsBody(edgeFrom: a, to: b)
-        body.categoryBitMask = category
-        line.physicsBody = body
+        if physics {
+            let body = SKPhysicsBody(edgeFrom: a, to: b)
+            body.categoryBitMask = category
+            line.physicsBody = body
+        }
         node.addChild(line)
     }
 
@@ -645,9 +658,9 @@ final class LevelScene: SKScene {
                 cg.move(to: a); cg.addLine(to: b); cg.strokePath()
             }
 
-            // platforms and walls
+            // platforms and walls, the core bar sits at zPosition 1 over its rim
             for node in platformsNode?.children ?? [] {
-                guard let shape = node as? SKShapeNode, shape.physicsBody != nil,
+                guard let shape = node as? SKShapeNode, shape.zPosition == 1,
                       let bb = shape.path?.boundingBoxOfPath else { continue }
                 if bb.width >= bb.height {
                     drawBar(pt(CGPoint(x: bb.minX, y: bb.midY)), pt(CGPoint(x: bb.maxX, y: bb.midY)))
@@ -797,13 +810,30 @@ final class LevelScene: SKScene {
         shoesSprite?.isHidden = !hasDash
     }
 
+    // true when the player is resting over a wall top, so its tip counts as jumpable
+    private func wallBeneath() -> Bool {
+        guard let c = customLevel, let player else { return false }
+        let feet = player.position.y - modelSize / 2
+        for p in c.platforms where p.isVertical {
+            let cx = CGFloat(p.x) * size.width + CGFloat(p.offX)
+            let top = CGFloat(p.y) * size.height + CGFloat(p.offY) + CGFloat(p.w) * size.width / 2
+            if abs(player.position.x - cx) <= hitW / 2, feet <= top + 4, feet >= top - 6 {
+                return true
+            }
+        }
+        return false
+    }
+
     // casts horizontal rays across the hitbox toward the movement and stops the
     // velocity right at the nearest vertical wall, mirroring the outer wall clamp
     private func clampToWalls(_ vx: CGFloat, dt: CGFloat) -> CGFloat {
         guard vx != 0, let player else { return vx }
         let dir: CGFloat = vx > 0 ? 1 : -1
         let mask = entryPhasing ? Cat.ground : Cat.ground | Cat.platform
-        let reach = hitW / 2 + abs(vx) * dt + 1
+        // stop the model short of the wall like the outer walls, so the hitbox never
+        // touches the edge and the physics contact cant jitter
+        let half = modelSize / 2
+        let reach = half + abs(vx) * dt + 1
         let bottom = player.position.y - modelSize / 2
         var wallX: CGFloat?
         for y in [bottom + 2, bottom + hitH / 2, bottom + hitH - 2] {
@@ -817,7 +847,7 @@ final class LevelScene: SKScene {
             }
         }
         guard let wx = wallX else { return vx }
-        let clamped = (wx - dir * (hitW / 2 + 0.5) - player.position.x) / dt
+        let clamped = (wx - dir * half - player.position.x) / dt
         return dir > 0 ? max(0, min(vx, clamped)) : min(0, max(vx, clamped))
     }
 
@@ -1049,6 +1079,11 @@ final class LevelScene: SKScene {
                 }
                 if grounded { break }
             }
+        }
+        // the narrow wall top holds the player through physics, this just makes the
+        // whole standable width jumpable since the foot rays can miss a thin top
+        if !grounded, body.velocity.dy <= 20, !entryPhasing, wallBeneath() {
+            grounded = true
         }
         if grounded {
             lastGroundedTime = sceneTime
