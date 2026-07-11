@@ -356,6 +356,10 @@ struct LevelEditorView: View {
     @State private var draggingHeart = false
     @State private var dragAnchor: CGPoint?
     @State private var canvasSize: CGSize = .zero
+    @State private var zoom: CGFloat = 1
+    @State private var zoomBase: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panBase: CGSize = .zero
     private let gridCols: CGFloat = 27
 
     init(level: LevelData, isNew: Bool = false,
@@ -375,29 +379,61 @@ struct LevelEditorView: View {
             ZStack {
                 Color.gameBG
 
-                // gate line and the empty heart slot, drawn exactly where the game puts them
-                Rectangle().fill(.white.opacity(0.35)).frame(height: 1).position(x: w / 2, y: barY)
-                Image("cube.heart").resizable().scaledToFit().frame(width: 34, height: 34).opacity(0.4)
-                    .position(x: w - GameRef.slotRightInset, y: GameRef.slotTopOffset)
+                // the zoomable / pannable canvas, controls stay fixed on top
+                ZStack {
+                    Color.gameBG
 
-                gridOverlay(w: w, h: h)
+                    // gate line and the empty heart slot, drawn where the game puts them
+                    Rectangle().fill(.white.opacity(0.35)).frame(height: 1).position(x: w / 2, y: barY)
+                    Image("cube.heart").resizable().scaledToFit().frame(width: 34, height: 34).opacity(0.4)
+                        .position(x: w - GameRef.slotRightInset, y: GameRef.slotTopOffset)
 
-                Color.clear.contentShape(Rectangle())
-                    .onTapGesture { selected = nil; heartSelected = false; multiSelected = [] }
+                    gridOverlay(w: w, h: h)
 
-                ForEach($level.platforms) { $p in platformView($p, w: w, h: h) }
+                    Color.clear.contentShape(Rectangle())
+                        .onTapGesture { selected = nil; heartSelected = false; multiSelected = [] }
+                        .gesture(DragGesture(coordinateSpace: .named("screen"))
+                            .onChanged { v in
+                                guard zoom > 1 else { return }
+                                pan = clampPan(CGSize(width: panBase.width + v.translation.width,
+                                                      height: panBase.height + v.translation.height), w, h)
+                            }
+                            .onEnded { _ in panBase = pan })
 
-                if heartPlaced || draggingHeart { heartView(w: w, h: h) }
+                    ForEach($level.platforms) { $p in platformView($p, w: w, h: h) }
+
+                    if heartPlaced || draggingHeart { heartView(w: w, h: h) }
+                }
+                .coordinateSpace(name: "canvas")
+                .scaleEffect(zoom)
+                .offset(pan)
+                .clipped()
+                .simultaneousGesture(MagnifyGesture()
+                    .onChanged { v in
+                        // zoom toward the pinch point, keeping it fixed under the fingers
+                        let z1 = min(max(zoomBase * v.magnification, 1), 4)
+                        let focalX = v.startAnchor.x * w, focalY = v.startAnchor.y * h
+                        let cx = w / 2, cy = h / 2, r = z1 / zoomBase
+                        zoom = z1
+                        pan = clampPan(CGSize(width: (focalX - cx) - (focalX - cx - panBase.width) * r,
+                                              height: (focalY - cy) - (focalY - cy - panBase.height) * r), w, h)
+                    }
+                    .onEnded { _ in
+                        zoomBase = zoom
+                        if zoom <= 1.001 { pan = .zero; panBase = .zero }
+                        else { pan = clampPan(pan, w, h); panBase = pan }
+                    })
 
                 topBar
                 paletteBar(w: w, h: h, barY: barY)
             }
-            .coordinateSpace(name: "canvas")
+            .coordinateSpace(name: "screen")
             .onAppear { canvasSize = CGSize(width: w, height: h) }
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
-        .onChange(of: selected) { _, new in if new == nil { showProps = false } }
+        .onChange(of: selected) { _, new in if new == nil, multiSelected.isEmpty { showProps = false } }
+        .onChange(of: multiSelected) { _, s in if s.isEmpty, selected == nil { showProps = false } }
         .sheet(isPresented: $showProps) {
             propsSheet
                 .presentationDetents([.height(300)])
@@ -413,36 +449,54 @@ struct LevelEditorView: View {
         }
     }
 
+    // indices of every item the properties apply to, one or the whole selection
+    private func propsTargets() -> [Int] {
+        if multiMode, !multiSelected.isEmpty {
+            return level.platforms.indices.filter { multiSelected.contains(level.platforms[$0].id) }
+        } else if let id = selected {
+            return level.platforms.indices.filter { level.platforms[$0].id == id }
+        }
+        return []
+    }
+
     @ViewBuilder private var propsSheet: some View {
-        if let id = selected, let i = level.platforms.firstIndex(where: { $0.id == id }) {
-            let vert = level.platforms[i].isVertical
-            let cells = Binding<Int>(
-                get: { max(1, Int((level.platforms[i].w * gridCols).rounded())) },
+        let targets = propsTargets()
+        if let first = targets.first {
+            let vert = level.platforms[first].isVertical
+            // length in half cells, so it steps 0.5, 1, 1.5, 2 ... applied to all
+            let halves = Binding<Int>(
+                get: { max(1, Int((level.platforms[first].w * gridCols * 2).rounded())) },
                 set: { n in
-                    level.platforms[i].w = Double(n) / Double(gridCols)
                     let W = canvasSize.width, H = canvasSize.height
-                    guard W > 0, H > 0 else { return }
-                    let c = CGPoint(x: CGFloat(level.platforms[i].x) * W,
-                                    y: (1 - CGFloat(level.platforms[i].y)) * H)
-                    let s = snapPlatform(c, w: W, cells: n, vertical: vert)
-                    level.platforms[i].x = fx(s.x, W)
-                    level.platforms[i].y = fy(s.y, H)
+                    for i in targets {
+                        level.platforms[i].w = Double(n) / (2 * Double(gridCols))
+                        guard W > 0, H > 0 else { continue }
+                        let c = CGPoint(x: CGFloat(level.platforms[i].x) * W,
+                                        y: (1 - CGFloat(level.platforms[i].y)) * H)
+                        let s = snapPlatform(c, w: W, lengthCells: CGFloat(n) / 2,
+                                             vertical: level.platforms[i].isVertical)
+                        level.platforms[i].x = fx(s.x, W)
+                        level.platforms[i].y = fy(s.y, H)
+                    }
                 }
             )
             // one step per pixel across a whole cell, so maxing it lines up with the
             // next tile instead of leaving a couple unreachable pixels
             let maxOff = max(0, Int((canvasSize.width / gridCols).rounded()))
             let ox = Binding<Int>(
-                get: { Int(level.platforms[i].offX) },
-                set: { level.platforms[i].ox = Double($0) }
+                get: { Int(level.platforms[first].offX) },
+                set: { v in for i in targets { level.platforms[i].ox = Double(v) } }
             )
             let oy = Binding<Int>(
-                get: { Int(level.platforms[i].offY) },
-                set: { level.platforms[i].oy = Double($0) }
+                get: { Int(level.platforms[first].offY) },
+                set: { v in for i in targets { level.platforms[i].oy = Double(v) } }
             )
             VStack(alignment: .leading, spacing: 18) {
-                Text("Properties").font(.title2).bold()
-                propRow(vert ? "Height" : "Length", "\(cells.wrappedValue) squares", cells, 1...Int(gridCols))
+                Text(targets.count > 1 ? "Properties · \(targets.count)" : "Properties")
+                    .font(.title2).bold()
+                propRow(vert ? "Height" : "Length",
+                        String(format: "%g squares", Double(halves.wrappedValue) / 2),
+                        halves, 1...Int(gridCols * 2))
                 propRow("X Offset", "\(ox.wrappedValue) px", ox, 0...maxOff)
                 propRow("Y Offset", "\(oy.wrappedValue) px", oy, 0...maxOff)
             }
@@ -498,10 +552,9 @@ struct LevelEditorView: View {
                 TextField("name", text: $level.name)
                     .font(.subheadline).bold().foregroundStyle(.white).frame(maxWidth: 80)
                 Spacer()
-                if selected != nil, !multiMode {
-                    barButton("slider.horizontal.3") { showProps = true }
-                }
                 if selected != nil || !multiSelected.isEmpty {
+                    barButton("slider.horizontal.3") { showProps = true }
+                    barButton("plus.square.on.square") { duplicateSelected() }
                     barButton("trash", tint: .red) { deleteSelected() }
                 }
                 barButton(multiMode ? "checkmark.circle.fill" : "checkmark.circle",
@@ -541,10 +594,10 @@ struct LevelEditorView: View {
                         .opacity(heartPlaced ? 0.3 : 1)
                         .frame(width: 64, height: 44).contentShape(Rectangle())
                         .allowsHitTesting(!heartPlaced)
-                        .gesture(DragGesture(coordinateSpace: .named("canvas"))
+                        .gesture(DragGesture(coordinateSpace: .named("screen"))
                             .onChanged { v in
                                 draggingHeart = true
-                                let s = snap(v.location, w: w, h: h)
+                                let s = snap(toCanvas(v.location, w, h), w: w, h: h)
                                 level.heartX = fx(s.x, w)
                                 level.heartY = fy(s.y, h)
                             }
@@ -567,10 +620,10 @@ struct LevelEditorView: View {
                 .frame(width: vertical ? 4.4 : 46, height: vertical ? 40 : 4.4)
         }
             .frame(width: 56, height: 46).contentShape(Rectangle())
-            .gesture(DragGesture(coordinateSpace: .named("canvas"))
+            .gesture(DragGesture(coordinateSpace: .named("screen"))
                 .onChanged { v in
                     let cells = vertical ? 4 : 5
-                    let s = snapPlatform(v.location, w: w, cells: cells, vertical: vertical)
+                    let s = snapPlatform(toCanvas(v.location, w, h), w: w, lengthCells: CGFloat(cells), vertical: vertical)
                     if let id = draggingNewPlatform, let i = level.platforms.firstIndex(where: { $0.id == id }) {
                         level.platforms[i].x = fx(s.x, w)
                         level.platforms[i].y = fy(s.y, h)
@@ -602,8 +655,10 @@ struct LevelEditorView: View {
             .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
             .contentShape(Rectangle())
             .position(x: cx, y: cy)
-            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("screen"))
                 .onChanged { v in
+                    // screen translation to canvas translation, so zoom doesnt change the speed
+                    let t = CGSize(width: v.translation.width / zoom, height: v.translation.height / zoom)
                     if multiMode {
                         if multiAnchors.isEmpty {
                             multiSelected.insert(id)
@@ -613,7 +668,7 @@ struct LevelEditorView: View {
                                 }
                             }
                         }
-                        moveGroup(translation: v.translation, w: w, h: h)
+                        moveGroup(translation: t, w: w, h: h)
                     } else {
                         if dragAnchor == nil {
                             selected = id; heartSelected = false
@@ -622,9 +677,9 @@ struct LevelEditorView: View {
                                                  y: (1 - CGFloat(p.wrappedValue.y)) * h)
                         }
                         guard let a = dragAnchor else { return }
-                        let cells = max(1, Int((p.wrappedValue.w * gridCols).rounded()))
-                        let s = snapPlatform(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height),
-                                             w: w, cells: cells, vertical: vert)
+                        let lc = CGFloat(p.wrappedValue.w) * gridCols
+                        let s = snapPlatform(CGPoint(x: a.x + t.width, y: a.y + t.height),
+                                             w: w, lengthCells: lc, vertical: vert)
                         p.wrappedValue.x = fx(s.x, w)
                         p.wrappedValue.y = fy(s.y, h)
                     }
@@ -643,9 +698,9 @@ struct LevelEditorView: View {
     private func moveGroup(translation: CGSize, w: CGFloat, h: CGFloat) {
         for sid in multiSelected {
             guard let a = multiAnchors[sid], let i = level.platforms.firstIndex(where: { $0.id == sid }) else { continue }
-            let cells = max(1, Int((level.platforms[i].w * gridCols).rounded()))
+            let lc = CGFloat(level.platforms[i].w) * gridCols
             let s = snapPlatform(CGPoint(x: a.x + translation.width, y: a.y + translation.height),
-                                 w: w, cells: cells, vertical: level.platforms[i].isVertical)
+                                 w: w, lengthCells: lc, vertical: level.platforms[i].isVertical)
             level.platforms[i].x = fx(s.x, w)
             level.platforms[i].y = fy(s.y, h)
         }
@@ -658,11 +713,11 @@ struct LevelEditorView: View {
             .shadow(color: .black.opacity(0.6), radius: 3)
             .frame(width: 44, height: 44).contentShape(Rectangle())
             .position(x: cx, y: cy)
-            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("canvas"))
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("screen"))
                 .onChanged { v in
                     if dragAnchor == nil { heartSelected = true; selected = nil; dragAnchor = CGPoint(x: cx, y: cy) }
                     guard let a = dragAnchor else { return }
-                    let s = snap(CGPoint(x: a.x + v.translation.width, y: a.y + v.translation.height), w: w, h: h)
+                    let s = snap(CGPoint(x: a.x + v.translation.width / zoom, y: a.y + v.translation.height / zoom), w: w, h: h)
                     level.heartX = fx(s.x, w)
                     level.heartY = fy(s.y, h)
                 }
@@ -696,13 +751,19 @@ struct LevelEditorView: View {
         return CGPoint(x: (p.x / cell).rounded() * cell, y: (p.y / cell).rounded() * cell)
     }
 
-    // snap a bar so both its ends land on grid lines, along its long axis, and
-    // its thin axis sits on a line too
-    private func snapPlatform(_ center: CGPoint, w: CGFloat, cells: Int, vertical: Bool) -> CGPoint {
+    // snap a bar so its near end lands on a grid line, along its long axis, and its
+    // thin axis sits on a line too, length is in cells and can be a half
+    private func snapPlatform(_ center: CGPoint, w: CGFloat, lengthCells: CGFloat, vertical: Bool) -> CGPoint {
         let cell = w / gridCols
-        let half = CGFloat(cells) * cell / 2
+        let half = lengthCells * cell / 2
         func line(_ c: CGFloat) -> CGFloat { (c / cell).rounded() * cell }
-        func edge(_ c: CGFloat) -> CGFloat { ((c - half) / cell).rounded() * cell + half }
+        // either edge may land on a grid line, whichever the drag is nearer to, so a
+        // half length bar can start on a block or end on one
+        func edge(_ c: CGFloat) -> CGFloat {
+            let near = ((c - half) / cell).rounded() * cell + half
+            let far = ((c + half) / cell).rounded() * cell - half
+            return abs(near - c) <= abs(far - c) ? near : far
+        }
         return vertical ? CGPoint(x: line(center.x), y: edge(center.y))
                         : CGPoint(x: edge(center.x), y: line(center.y))
     }
@@ -721,6 +782,28 @@ struct LevelEditorView: View {
         }
     }
 
+    // clones the selected items a cell down and right, then selects the clones
+    private func duplicateSelected() {
+        let dx = 1.0 / Double(gridCols)
+        let dy = canvasSize.height > 0 ? Double(canvasSize.width / gridCols / canvasSize.height) : dx
+        func clone(_ p: PlatformData) -> PlatformData {
+            var c = p
+            c.id = UUID()
+            c.x = min(0.96, p.x + dx)
+            c.y = max(0.04, p.y - dy)
+            return c
+        }
+        if multiMode, !multiSelected.isEmpty {
+            let copies = level.platforms.filter { multiSelected.contains($0.id) }.map(clone)
+            level.platforms.append(contentsOf: copies)
+            multiSelected = Set(copies.map { $0.id })
+        } else if let id = selected, let p = level.platforms.first(where: { $0.id == id }) {
+            let c = clone(p)
+            level.platforms.append(c)
+            selected = c.id
+        }
+    }
+
     private func exitSaving() {
         onSave(level)
         onExit()
@@ -732,6 +815,18 @@ struct LevelEditorView: View {
         clamp(Double(1 - y / h), Double(GameRef.barHeight / h) + 0.015, 0.97)
     }
     private func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double { min(max(v, lo), hi) }
+
+    // a screen point back to unscaled canvas coords, for the palette drops
+    private func toCanvas(_ p: CGPoint, _ w: CGFloat, _ h: CGFloat) -> CGPoint {
+        CGPoint(x: (p.x - w / 2 - pan.width) / zoom + w / 2,
+                y: (p.y - h / 2 - pan.height) / zoom + h / 2)
+    }
+
+    // keeps the zoomed canvas from panning past its own edges
+    private func clampPan(_ p: CGSize, _ w: CGFloat, _ h: CGFloat) -> CGSize {
+        let mx = w / 2 * (zoom - 1), my = h / 2 * (zoom - 1)
+        return CGSize(width: min(max(p.width, -mx), mx), height: min(max(p.height, -my), my))
+    }
 }
 
 // MARK: - Playtest
@@ -764,7 +859,8 @@ struct LevelPlaytestView: View {
         ZStack(alignment: .topLeading) {
             Color.gameBG
             SpriteView(scene: scene, preferredFramesPerSecond: 120,
-                       options: [.ignoresSiblingOrder])
+                       options: [.ignoresSiblingOrder],
+                       debugOptions: PerfHUD.on ? [.showsFPS, .showsNodeCount, .showsDrawCount] : [])
                 .ignoresSafeArea()
             Button(action: onExit) {
                 Image(systemName: "chevron.left").font(.system(size: 22, weight: .semibold))

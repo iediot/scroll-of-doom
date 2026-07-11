@@ -127,6 +127,7 @@ final class LevelScene: SKScene {
     private var wings: SKNode?
     private var hatchNode: SKNode?
     private var platformsNode: SKNode?
+    private var platformSegments: [(a: CGPoint, b: CGPoint)] = []   // for the save thumbnail
     private var hatchCenter: CGPoint = .zero
     private var hasKey = false
     private var hatchUnlocked = false
@@ -437,6 +438,22 @@ final class LevelScene: SKScene {
         platformsNode?.removeFromParent()
         let node = SKNode()
         node.zPosition = 5
+        platformSegments = []
+
+        // every bar draws into one shared path, physics bodies stay per segment, so the
+        // whole level is only two shape node draw calls instead of two per platform
+        let visual = CGMutablePath()
+        func drawBar(_ a: CGPoint, _ b: CGPoint) {
+            visual.move(to: a); visual.addLine(to: b)
+            platformSegments.append((a, b))
+        }
+        func edgeBody(_ a: CGPoint, _ b: CGPoint, _ category: UInt32) {
+            let n = SKNode()
+            let body = SKPhysicsBody(edgeFrom: a, to: b)
+            body.categoryBitMask = category
+            n.physicsBody = body
+            node.addChild(n)
+        }
 
         if let c = customLevel {
             for p in c.platforms {
@@ -444,10 +461,8 @@ final class LevelScene: SKScene {
                 let cy = CGFloat(p.y) * size.height + CGFloat(p.offY)
                 let len = CGFloat(p.w) * size.width
                 if p.isVertical {
-                    // visual only, then a thin solid body the wall's own width so its
-                    // top holds the player up through normal physics, no jitter, no ledge
-                    addSegment(node: node, a: CGPoint(x: cx, y: cy - len / 2),
-                               b: CGPoint(x: cx, y: cy + len / 2), category: Cat.platform, physics: false)
+                    drawBar(CGPoint(x: cx, y: cy - len / 2), CGPoint(x: cx, y: cy + len / 2))
+                    // a thin solid body the wall's own width so its top holds the player up
                     let wall = SKNode()
                     wall.position = CGPoint(x: cx, y: cy)
                     let wb = SKPhysicsBody(rectangleOf: CGSize(width: barWidth, height: len))
@@ -457,8 +472,8 @@ final class LevelScene: SKScene {
                     wall.physicsBody = wb
                     node.addChild(wall)
                 } else {
-                    addSegment(node: node, a: CGPoint(x: cx - len / 2, y: cy),
-                               b: CGPoint(x: cx + len / 2, y: cy), category: Cat.platform)
+                    let a = CGPoint(x: cx - len / 2, y: cy), b = CGPoint(x: cx + len / 2, y: cy)
+                    drawBar(a, b); edgeBody(a, b, Cat.platform)
                 }
             }
         } else {
@@ -468,46 +483,22 @@ final class LevelScene: SKScene {
             var i = 0
             while y < keyY - 35 {
                 let cx = i % 2 == 0 ? size.width - 75 : size.width - 160
-                addPlatform(node: node, cx: cx, y: y, width: 70)
+                let a = CGPoint(x: cx - 35, y: y), b = CGPoint(x: cx + 35, y: y)
+                drawBar(a, b); edgeBody(a, b, Cat.ground)
                 y += 52
                 i += 1
             }
         }
 
+        let rim = SKShapeNode(path: visual)
+        rim.strokeColor = .black; rim.lineWidth = barOutline; rim.lineCap = .round; rim.zPosition = 0
+        node.addChild(rim)
+        let core = SKShapeNode(path: visual)
+        core.strokeColor = barColor; core.lineWidth = barWidth; core.lineCap = .round; core.zPosition = 1
+        node.addChild(core)
+
         addChild(node)
         platformsNode = node
-    }
-
-    private func addPlatform(node: SKNode, cx: CGFloat, y: CGFloat, width: CGFloat) {
-        addSegment(node: node, a: CGPoint(x: cx - width / 2, y: y),
-                   b: CGPoint(x: cx + width / 2, y: y))
-    }
-
-    private func addSegment(node: SKNode, a: CGPoint, b: CGPoint,
-                            category: UInt32 = Cat.ground, physics: Bool = true) {
-        let path = CGMutablePath()
-        path.move(to: a)
-        path.addLine(to: b)
-
-        // wider black stroke behind, so the rim shows all the way around the grayer bar
-        let outline = SKShapeNode(path: path)
-        outline.strokeColor = .black
-        outline.lineWidth = barOutline
-        outline.lineCap = .round
-        outline.zPosition = 0
-        node.addChild(outline)
-
-        let line = SKShapeNode(path: path)
-        line.strokeColor = barColor
-        line.lineWidth = barWidth
-        line.lineCap = .round
-        line.zPosition = 1
-        if physics {
-            let body = SKPhysicsBody(edgeFrom: a, to: b)
-            body.categoryBitMask = category
-            line.physicsBody = body
-        }
-        node.addChild(line)
     }
 
     private func addHeartKey() {
@@ -658,15 +649,9 @@ final class LevelScene: SKScene {
                 cg.move(to: a); cg.addLine(to: b); cg.strokePath()
             }
 
-            // platforms and walls, the core bar sits at zPosition 1 over its rim
-            for node in platformsNode?.children ?? [] {
-                guard let shape = node as? SKShapeNode, shape.zPosition == 1,
-                      let bb = shape.path?.boundingBoxOfPath else { continue }
-                if bb.width >= bb.height {
-                    drawBar(pt(CGPoint(x: bb.minX, y: bb.midY)), pt(CGPoint(x: bb.maxX, y: bb.midY)))
-                } else {
-                    drawBar(pt(CGPoint(x: bb.midX, y: bb.minY)), pt(CGPoint(x: bb.midX, y: bb.maxY)))
-                }
+            // platforms and walls
+            for seg in platformSegments {
+                drawBar(pt(seg.a), pt(seg.b))
             }
             // locked gate spans the floor
             if !hatchUnlocked {
@@ -824,30 +809,31 @@ final class LevelScene: SKScene {
         return false
     }
 
-    // casts horizontal rays across the hitbox toward the movement and stops the
-    // velocity right at the nearest vertical wall, mirroring the outer wall clamp
+    // stops horizontal motion right at the nearest bar face the player is level with,
+    // treating each bar as a rectangle so wall faces and platform ends both work, and
+    // it stops the model short so the hitbox never touches and the contact cant jitter
     private func clampToWalls(_ vx: CGFloat, dt: CGFloat) -> CGFloat {
-        guard vx != 0, let player else { return vx }
+        guard vx != 0, !entryPhasing, let player else { return vx }
         let dir: CGFloat = vx > 0 ? 1 : -1
-        let mask = entryPhasing ? Cat.ground : Cat.ground | Cat.platform
-        // stop the model short of the wall like the outer walls, so the hitbox never
-        // touches the edge and the physics contact cant jitter
         let half = modelSize / 2
-        let reach = half + abs(vx) * dt + 1
-        let bottom = player.position.y - modelSize / 2
-        var wallX: CGFloat?
-        for y in [bottom + 2, bottom + hitH / 2, bottom + hitH - 2] {
-            let start = CGPoint(x: player.position.x, y: y)
-            let end = CGPoint(x: player.position.x + dir * reach, y: y)
-            physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, point, _, stop in
-                if hit.categoryBitMask & mask != 0 {
-                    if wallX == nil || dir * point.x < dir * wallX! { wallX = point.x }
-                    stop.pointee = true
-                }
+        let px = player.position.x
+        let feet = player.position.y - modelSize / 2
+        let hy0 = feet + 2, hy1 = feet + hitH - 2   // hitbox height, inset a hair
+        var limit: CGFloat?
+        for seg in platformSegments {
+            let rx0 = min(seg.a.x, seg.b.x) - barWidth / 2
+            let rx1 = max(seg.a.x, seg.b.x) + barWidth / 2
+            let ry0 = min(seg.a.y, seg.b.y) - barWidth / 2
+            let ry1 = max(seg.a.y, seg.b.y) + barWidth / 2
+            guard hy1 > ry0, hy0 < ry1 else { continue }   // only bars at the players level
+            if dir > 0, rx0 >= px {
+                limit = min(limit ?? .greatestFiniteMagnitude, rx0 - half)
+            } else if dir < 0, rx1 <= px {
+                limit = max(limit ?? -.greatestFiniteMagnitude, rx1 + half)
             }
         }
-        guard let wx = wallX else { return vx }
-        let clamped = (wx - dir * half - player.position.x) / dt
+        guard let lim = limit else { return vx }
+        let clamped = (lim - px) / dt
         return dir > 0 ? max(0, min(vx, clamped)) : min(0, max(vx, clamped))
     }
 
@@ -880,9 +866,13 @@ final class LevelScene: SKScene {
     private func spawnParticles(at pos: CGPoint, count: Int, life: TimeInterval = 0.32,
                                 _ vel: (Int) -> CGVector) {
         for i in 0..<count {
-            let dot = particleShape()
+            // sprites with a shared prebaked texture, so a whole burst batches into one
+            // draw call instead of a stroked shape node each
+            let dot = SKSpriteNode(texture: Self.particleTextures.randomElement()!)
+            dot.size = CGSize(width: 6, height: 6)
             dot.zPosition = 9
             dot.position = pos
+            dot.zRotation = .random(in: 0 ..< .pi * 2)
             addChild(dot)
             let v = vel(i)
             let move = SKAction.moveBy(x: v.dx, y: v.dy, duration: life)
@@ -895,33 +885,44 @@ final class LevelScene: SKScene {
         }
     }
 
-    // a white particle with a thin black outline, in one of a few little shapes
-    private func particleShape() -> SKShapeNode {
-        let r: CGFloat = 2
-        let node: SKShapeNode
-        switch Int.random(in: 0..<4) {
-        case 0:
-            node = SKShapeNode(circleOfRadius: r)
-        case 1:
-            node = SKShapeNode(rectOf: CGSize(width: r * 2, height: r * 2), cornerRadius: 0.6)
-        case 2:
-            let d = CGMutablePath()   // diamond
-            d.move(to: CGPoint(x: 0, y: r * 1.4)); d.addLine(to: CGPoint(x: r * 1.4, y: 0))
-            d.addLine(to: CGPoint(x: 0, y: -r * 1.4)); d.addLine(to: CGPoint(x: -r * 1.4, y: 0))
-            d.closeSubpath()
-            node = SKShapeNode(path: d)
-        default:
-            let t = CGMutablePath()   // triangle
-            t.move(to: CGPoint(x: 0, y: r * 1.3)); t.addLine(to: CGPoint(x: -r * 1.2, y: -r))
-            t.addLine(to: CGPoint(x: r * 1.2, y: -r)); t.closeSubpath()
-            node = SKShapeNode(path: t)
+    // white particles with a thin black outline, five little shapes baked once
+    private static let particleTextures: [SKTexture] = (0..<5).map { particleTexture($0) }
+
+    private static func particleTexture(_ shape: Int) -> SKTexture {
+        let s: CGFloat = 14, r = s * 0.34, c = CGPoint(x: s / 2, y: s / 2)
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false
+        let img = UIGraphicsImageRenderer(size: CGSize(width: s, height: s), format: fmt).image { _ in
+            let path: UIBezierPath
+            switch shape {
+            case 0:
+                path = UIBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+            case 1:
+                path = UIBezierPath(roundedRect: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r),
+                                    cornerRadius: r * 0.3)
+            case 2:
+                path = UIBezierPath()
+                path.move(to: CGPoint(x: c.x, y: c.y - r * 1.4)); path.addLine(to: CGPoint(x: c.x + r * 1.4, y: c.y))
+                path.addLine(to: CGPoint(x: c.x, y: c.y + r * 1.4)); path.addLine(to: CGPoint(x: c.x - r * 1.4, y: c.y))
+                path.close()
+            case 3:
+                path = UIBezierPath()
+                path.move(to: CGPoint(x: c.x, y: c.y - r * 1.3)); path.addLine(to: CGPoint(x: c.x - r * 1.2, y: c.y + r))
+                path.addLine(to: CGPoint(x: c.x + r * 1.2, y: c.y + r)); path.close()
+            default:
+                path = UIBezierPath()   // five pointed star
+                let outer = r * 1.5, inner = r * 0.62
+                for k in 0..<10 {
+                    let rad = k % 2 == 0 ? outer : inner
+                    let ang = CGFloat(k) * .pi / 5 - .pi / 2
+                    let pt = CGPoint(x: c.x + cos(ang) * rad, y: c.y + sin(ang) * rad)
+                    k == 0 ? path.move(to: pt) : path.addLine(to: pt)
+                }
+                path.close()
+            }
+            UIColor.white.setFill(); path.fill()
+            UIColor.black.setStroke(); path.lineWidth = 1; path.lineJoinStyle = .round; path.stroke()
         }
-        node.fillColor = .white
-        node.strokeColor = .black
-        node.lineWidth = 0.8
-        node.lineJoin = .round
-        node.zRotation = .random(in: 0 ..< .pi * 2)
-        return node
+        return SKTexture(image: img)
     }
 
     private func jumpPuff() {

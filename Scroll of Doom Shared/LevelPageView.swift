@@ -6,6 +6,9 @@ import SpriteKit
 extension Color { static let gameBG = Color(white: 0.10) }
 extension UIColor { static let gameBG = UIColor(white: 0.10, alpha: 1) }
 
+// flip to true to show the on screen fps / node / draw overlay while debugging
+enum PerfHUD { static let on = false }
+
 // home/search move, create is the gate, profile jumps
 struct GameTabBar: View {
     static let height: CGFloat = 128
@@ -138,7 +141,8 @@ struct LevelPageView: View {
         ZStack(alignment: .bottom) {
             Color.gameBG
             SpriteView(scene: scene, preferredFramesPerSecond: 120,
-                       options: [.ignoresSiblingOrder])
+                       options: [.ignoresSiblingOrder],
+                       debugOptions: PerfHUD.on ? [.showsFPS, .showsNodeCount, .showsDrawCount] : [])
             engagementRail
             caption
             if bossPromptShown {
