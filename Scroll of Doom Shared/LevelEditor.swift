@@ -301,7 +301,7 @@ private struct LevelPreview: View {
     }
 
     private func draw(_ ctx: GraphicsContext, _ f: Fit) {
-        let line = max(1.2, 3 * f.s)
+        let line = max(1.3, 3.3 * f.s)
         let rim = line * 5 / 3   // black outline all around, a third of the bar each side
         // the side walls and top are black in game, only the gate and platforms show
         let tl = point(edgeInset, ref.height - edgeInset, f)
@@ -356,7 +356,7 @@ struct LevelEditorView: View {
     @State private var draggingHeart = false
     @State private var dragAnchor: CGPoint?
     @State private var canvasSize: CGSize = .zero
-    private let gridCols: CGFloat = 24
+    private let gridCols: CGFloat = 27
 
     init(level: LevelData, isNew: Bool = false,
          onSave: @escaping (LevelData) -> Void, onExit: @escaping () -> Void) {
@@ -560,9 +560,9 @@ struct LevelEditorView: View {
     private func platformPaletteItem(vertical: Bool, w: CGFloat, h: CGFloat) -> some View {
         ZStack {
             Capsule().fill(.black)
-                .frame(width: vertical ? 7 : 49, height: vertical ? 43 : 7)
+                .frame(width: vertical ? 7.7 : 49, height: vertical ? 43 : 7.7)
             Capsule().fill(Color(white: 0.8))
-                .frame(width: vertical ? 4 : 46, height: vertical ? 40 : 4)
+                .frame(width: vertical ? 4.4 : 46, height: vertical ? 40 : 4.4)
         }
             .frame(width: 56, height: 46).contentShape(Rectangle())
             .gesture(DragGesture(coordinateSpace: .named("canvas"))
@@ -593,9 +593,9 @@ struct LevelEditorView: View {
         return ZStack {
             // black rim all around, grayer bar on top, matching the game
             Capsule().fill(.black)
-                .frame(width: vert ? 5 : len + 2, height: vert ? len + 2 : 5)
+                .frame(width: vert ? 5.5 : len + 2.2, height: vert ? len + 2.2 : 5.5)
             Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
-                .frame(width: vert ? 3 : len, height: vert ? len : 3)
+                .frame(width: vert ? 3.3 : len, height: vert ? len : 3.3)
         }
             .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
             .contentShape(Rectangle())

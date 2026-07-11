@@ -56,7 +56,7 @@ enum CustomLevelStore {
 final class LevelScene: SKScene {
 
     private let moveSpeed: CGFloat = 260
-    private let jumpSpeed: CGFloat = 715
+    private let jumpSpeed: CGFloat = 751
     private let gravityY: CGFloat = -26
     // coyote time and jump buffering
     private let coyoteTime: TimeInterval = 0.08
@@ -91,16 +91,16 @@ final class LevelScene: SKScene {
     var onJumpStateChanged: ((Bool, Bool) -> Void)?
     var onDashStateChanged: ((Bool) -> Void)?
 
-    private let modelSize: CGFloat = 30
+    private let modelSize: CGFloat = 33
     // small fixed hitbox, centered horizontally and sitting at the models feet
-    private let hitW: CGFloat = 18
-    private let hitH: CGFloat = 22
+    private let hitW: CGFloat = 19.8
+    private let hitH: CGFloat = 24.2
     // stacked sprite layers, drawn bigger than the hitbox
-    private let spriteW: CGFloat = 40
+    private let spriteW: CGFloat = 44
     private var spriteH: CGFloat { spriteW * 600 / 512 }
     private let heartSize: CGFloat = 38   // the pickup heart, held one is a touch smaller
     // platforms and walls, a grayer bar with a black rim a third of its width each side
-    private let barWidth: CGFloat = 3
+    private let barWidth: CGFloat = 3.3
     private let barColor = UIColor(white: 0.8, alpha: 1)
     private var barOutline: CGFloat { barWidth + 2 * barWidth / 3 }
 
@@ -113,7 +113,11 @@ final class LevelScene: SKScene {
     private var mouthSprite: SKSpriteNode!  // swaps between open, neutral, happy
     private var heldHeart: SKSpriteNode!    // shown above the head while carrying the key
     private var shoesSprite: SKSpriteNode!  // shown at the feet once dash is unlocked
-    private var wingsSprite: SKSpriteNode!  // drawn behind the body with double jump
+    private var leftWing: SKSpriteNode!     // the two wings flap with jumping and falling
+    private var rightWing: SKSpriteNode!
+    private enum Pose { case ground, up, apex, down }
+    private var pose: Pose = .ground
+    private let apexBand: CGFloat = 90   // near zero vertical speed counts as the top
     private var wasGrounded = true
     private var descentSpeed: CGFloat = 0
     private var prevVelY: CGFloat = 0
@@ -133,7 +137,7 @@ final class LevelScene: SKScene {
     private var cornerR: CGFloat = 0
 
     private let dashSpeed: CGFloat = 480
-    private let dashDuration: TimeInterval = 0.16
+    private let dashDuration: TimeInterval = 0.168
     private let dashCooldown: TimeInterval = 0.45
     private var dashEndTime: TimeInterval = -1
     private var dashReadyTime: TimeInterval = -1
@@ -245,13 +249,19 @@ final class LevelScene: SKScene {
             walkNode.addChild(n)
             return n
         }
-        // wings sit behind everything, their own wider canvas
-        wingsSprite = SKSpriteNode(texture: SKTexture(imageNamed: "cube.wings"))
-        wingsSprite.size = CGSize(width: spriteW * 1.5, height: spriteW * 1.5 * 600 / 700)
-        wingsSprite.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        wingsSprite.position = CGPoint(x: 0, y: spriteH * 0.62)
-        wingsSprite.zPosition = -1
-        walkNode.addChild(wingsSprite)
+        // the two wings sit behind everything, each on its own wide canvas so it can
+        // rotate around the body from the sprites center
+        func wing(_ name: String) -> SKSpriteNode {
+            let n = SKSpriteNode(texture: SKTexture(imageNamed: name))
+            n.size = CGSize(width: spriteW * 1.5, height: spriteW * 1.5 * 600 / 700)
+            n.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            n.position = CGPoint(x: 0, y: spriteH * 0.62)
+            n.zPosition = -1
+            walkNode.addChild(n)
+            return n
+        }
+        leftWing = wing("cube.wing.left")
+        rightWing = wing("cube.wing.right")
 
         bodySprite = layer("cube.sitting", 0)
         shoesSprite = layer("cube.shoes", 0.5)   // over the body, at the feet
@@ -271,6 +281,7 @@ final class LevelScene: SKScene {
         updateShoes()
         updateWings()
         walking = false
+        pose = .ground
         wasGrounded = false   // it drops in from the air
         setMouth(airborne: true)
 
@@ -706,6 +717,17 @@ final class LevelScene: SKScene {
         dashSquish()
         faceShoes(dashDirection)
         lookEyes(dashDirection, amount: 3.5)
+
+        // wings sweep further back for the burst, then settle to wherever movement wants
+        let back = SKAction.moveTo(x: -dashDirection * 18, duration: 0.06)
+        back.timingMode = .easeOut
+        let settle = SKAction.run { [weak self] in
+            guard let self else { return }
+            self.lookEyes(self.moveDirection)
+        }
+        let seq = SKAction.sequence([back, .wait(forDuration: dashDuration), settle])
+        leftWing?.run(seq, withKey: "look")
+        rightWing?.run(seq, withKey: "look")
     }
 
     // the face and shoes glance toward the direction of travel, the wings trail opposite
@@ -714,12 +736,48 @@ final class LevelScene: SKScene {
         eyesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
         mouthSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
         shoesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
-        wingsSprite?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
+        leftWing?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
+        rightWing?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
     }
 
     // wings only show once double jump is available
     private func updateWings() {
-        wingsSprite?.isHidden = extraJumps <= 0
+        leftWing?.isHidden = extraJumps <= 0
+        rightWing?.isHidden = extraJumps <= 0
+    }
+
+    // body sprite and wing angles follow the vertical motion
+    private func setPose(_ new: Pose) {
+        guard new != pose else { return }
+        pose = new
+
+        // keep the holding stance while carrying the heart, no jump or fall body then
+        if hasKey && !hatchUnlocked {
+            updateStance()
+        } else {
+            switch new {
+            case .up:   bodySprite?.texture = SKTexture(imageNamed: "cube.jumping")
+            case .down: bodySprite?.texture = SKTexture(imageNamed: "cube.falling")
+            case .apex, .ground: updateStance()   // original body at the top and on the ground
+            }
+        }
+
+        let deg: CGFloat = .pi / 6   // 30 degrees, tweak later
+        let baseY = spriteH * 0.62
+        // going up the wings sweep back and drop, falling they lift and sweep forward
+        let (rightRot, leftRot, dy): (CGFloat, CGFloat, CGFloat)
+        switch new {
+        case .up:              rightRot = -deg; leftRot =  deg; dy = -4
+        case .down:            rightRot =  deg; leftRot = -deg; dy =  4
+        case .apex, .ground:   rightRot =    0; leftRot =    0; dy =  0
+        }
+        poseWing(rightWing, rot: rightRot, y: baseY + dy)
+        poseWing(leftWing, rot: leftRot, y: baseY + dy)
+    }
+
+    private func poseWing(_ wing: SKSpriteNode?, rot: CGFloat, y: CGFloat) {
+        wing?.run(.group([.rotate(toAngle: rot, duration: 0.12, shortestUnitArc: true),
+                          .moveTo(y: y, duration: 0.12)]), withKey: "pose")
     }
 
     // open mouth in the air, a random neutral or happy mouth once back on the ground
@@ -737,6 +795,30 @@ final class LevelScene: SKScene {
     // shoes only show once dash is available
     private func updateShoes() {
         shoesSprite?.isHidden = !hasDash
+    }
+
+    // casts horizontal rays across the hitbox toward the movement and stops the
+    // velocity right at the nearest vertical wall, mirroring the outer wall clamp
+    private func clampToWalls(_ vx: CGFloat, dt: CGFloat) -> CGFloat {
+        guard vx != 0, let player else { return vx }
+        let dir: CGFloat = vx > 0 ? 1 : -1
+        let mask = entryPhasing ? Cat.ground : Cat.ground | Cat.platform
+        let reach = hitW / 2 + abs(vx) * dt + 1
+        let bottom = player.position.y - modelSize / 2
+        var wallX: CGFloat?
+        for y in [bottom + 2, bottom + hitH / 2, bottom + hitH - 2] {
+            let start = CGPoint(x: player.position.x, y: y)
+            let end = CGPoint(x: player.position.x + dir * reach, y: y)
+            physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, point, _, stop in
+                if hit.categoryBitMask & mask != 0 {
+                    if wallX == nil || dir * point.x < dir * wallX! { wallX = point.x }
+                    stop.pointee = true
+                }
+            }
+        }
+        guard let wx = wallX else { return vx }
+        let clamped = (wx - dir * (hitW / 2 + 0.5) - player.position.x) / dt
+        return dir > 0 ? max(0, min(vx, clamped)) : min(0, max(vx, clamped))
     }
 
     // sitting normally, holding the heart over its head while carrying the key
@@ -768,20 +850,48 @@ final class LevelScene: SKScene {
     private func spawnParticles(at pos: CGPoint, count: Int, life: TimeInterval = 0.32,
                                 _ vel: (Int) -> CGVector) {
         for i in 0..<count {
-            let dot = SKShapeNode(circleOfRadius: 1.8)
-            dot.fillColor = .white
-            dot.strokeColor = .clear
+            let dot = particleShape()
             dot.zPosition = 9
             dot.position = pos
             addChild(dot)
             let v = vel(i)
             let move = SKAction.moveBy(x: v.dx, y: v.dy, duration: life)
             move.timingMode = .easeOut
+            let spin = SKAction.rotate(byAngle: .random(in: -2...2), duration: life)
             dot.run(.sequence([
-                .group([move, .fadeOut(withDuration: life), .scale(to: 0.2, duration: life)]),
+                .group([move, spin, .fadeOut(withDuration: life), .scale(to: 0.2, duration: life)]),
                 .removeFromParent()
             ]))
         }
+    }
+
+    // a white particle with a thin black outline, in one of a few little shapes
+    private func particleShape() -> SKShapeNode {
+        let r: CGFloat = 2
+        let node: SKShapeNode
+        switch Int.random(in: 0..<4) {
+        case 0:
+            node = SKShapeNode(circleOfRadius: r)
+        case 1:
+            node = SKShapeNode(rectOf: CGSize(width: r * 2, height: r * 2), cornerRadius: 0.6)
+        case 2:
+            let d = CGMutablePath()   // diamond
+            d.move(to: CGPoint(x: 0, y: r * 1.4)); d.addLine(to: CGPoint(x: r * 1.4, y: 0))
+            d.addLine(to: CGPoint(x: 0, y: -r * 1.4)); d.addLine(to: CGPoint(x: -r * 1.4, y: 0))
+            d.closeSubpath()
+            node = SKShapeNode(path: d)
+        default:
+            let t = CGMutablePath()   // triangle
+            t.move(to: CGPoint(x: 0, y: r * 1.3)); t.addLine(to: CGPoint(x: -r * 1.2, y: -r))
+            t.addLine(to: CGPoint(x: r * 1.2, y: -r)); t.closeSubpath()
+            node = SKShapeNode(path: t)
+        }
+        node.fillColor = .white
+        node.strokeColor = .black
+        node.lineWidth = 0.8
+        node.lineJoin = .round
+        node.zRotation = .random(in: 0 ..< .pi * 2)
+        return node
     }
 
     private func jumpPuff() {
@@ -910,6 +1020,8 @@ final class LevelScene: SKScene {
         } else if predictedX < wallMin {
             vx = min(0, (wallMin - player.position.x) / dt)
         }
+        // stop cleanly against inner walls too, so the physics contact doesnt jitter
+        vx = clampToWalls(vx, dt: dt)
         body.velocity.dx = vx
         // dashes hold their height and trail particles the whole way
         if dashing {
@@ -925,7 +1037,8 @@ final class LevelScene: SKScene {
         var grounded = false
         if body.velocity.dy <= 20 {
             let foot = hitW / 2 - 1
-            for ox in [-foot, foot] {
+            // includes a center ray so a thin wall directly underneath still grounds
+            for ox in [-foot, 0, foot] {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
                 let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 6)
                 physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
@@ -950,6 +1063,9 @@ final class LevelScene: SKScene {
         }
         // bob while walking on the ground, but not mid dash or jump
         setWalking(grounded && moveDirection != 0 && !dashing && !entryPhasing)
+        // jumping while rising, original body at the apex, falling while dropping
+        let dy = body.velocity.dy
+        setPose(grounded ? .ground : (dy > apexBand ? .up : (dy < -apexBand ? .down : .apex)))
         if body.velocity.dy < -60 {
             descentSpeed = min(descentSpeed, body.velocity.dy)
         }
