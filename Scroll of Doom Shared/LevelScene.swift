@@ -865,6 +865,10 @@ final class LevelScene: SKScene {
 
     private func spawnParticles(at pos: CGPoint, count: Int, life: TimeInterval = 0.32,
                                 _ vel: (Int) -> CGVector) {
+        // scaled by the particles quality setting, off drops them entirely
+        let factor = GameSettings.shared.particleFactor
+        guard factor > 0 else { return }
+        let count = max(1, Int((CGFloat(count) * factor).rounded()))
         for i in 0..<count {
             // sprites with a shared prebaked texture, so a whole burst batches into one
             // draw call instead of a stroked shape node each

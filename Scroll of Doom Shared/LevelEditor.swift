@@ -39,7 +39,7 @@ struct MyLevelsView: View {
                         if !selecting { newTile }
                         Color.clear.frame(height: 1).id("bottom")
                     }
-                    .padding(.top, 150)
+                    .padding(.top, 168)
                     .padding(.horizontal, 2)
                     .padding(.bottom, selecting ? 100 : 40)
                 }
@@ -86,25 +86,20 @@ struct MyLevelsView: View {
                     pill("Select") { selecting = true }
                 }
             }
-            Text("My Levels").font(.system(size: 30, weight: .bold))
-            Text("\(levels.count) Items")
-                .font(.subheadline).bold().foregroundStyle(.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("My Levels").font(.system(size: 30, weight: .bold))
+                Text("\(levels.count) Items").font(.subheadline).bold()
+            }
+            .wordBlur()
+            .padding(.top, 10)
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
         .padding(.top, 58)
-        .padding(.bottom, 12)
+        .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // dark, subtle blur only behind the text, faded at the bottom, so the
-        // title and count stay crisp and previews show through underneath
-        .background {
-            ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                Color.black.opacity(0.55)
-            }
-            .mask(LinearGradient(colors: [.black, .black, .clear],
-                                 startPoint: .top, endPoint: .bottom))
-        }
+        // progressive glass blur, blurriest at the top and easing to nothing
+        .background { ProgressiveHeaderBlur() }
         .ignoresSafeArea(edges: .top)
     }
 
@@ -841,6 +836,7 @@ struct LevelPlaytestView: View {
     @State private var airJumpReady = false
     @State private var dashReady = true
     @State private var heldDirection: CGFloat = 0
+    @ObservedObject private var settings = GameSettings.shared
 
     init(level: LevelData, onExit: @escaping () -> Void) {
         self.level = level
@@ -858,9 +854,7 @@ struct LevelPlaytestView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.gameBG
-            SpriteView(scene: scene, preferredFramesPerSecond: 120,
-                       options: [.ignoresSiblingOrder],
-                       debugOptions: PerfHUD.on ? [.showsFPS, .showsNodeCount, .showsDrawCount] : [])
+            GameSpriteView(scene: scene, renderScale: settings.renderScale, framerate: settings.framerate)
                 .ignoresSafeArea()
             Button(action: onExit) {
                 Image(systemName: "chevron.left").font(.system(size: 22, weight: .semibold))

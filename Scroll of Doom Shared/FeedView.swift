@@ -89,10 +89,12 @@ struct FeedView: View {
     @State private var airJumpReady = false
     @State private var dashReady = true
 
-    private static let screenSpring = Animation.spring(response: 0.32, dampingFraction: 0.88)
+    // snappier and subtler, so less time and lighter compositing during the high
+    // refresh transition burst
+    private static let screenSpring = Animation.spring(response: 0.26, dampingFraction: 0.92)
     // ios app open depth feel
-    private static let screenIn = AnyTransition.scale(scale: 0.92).combined(with: .opacity)
-    private static let screenOut = AnyTransition.scale(scale: 1.08).combined(with: .opacity)
+    private static let screenIn = AnyTransition.scale(scale: 0.95).combined(with: .opacity)
+    private static let screenOut = AnyTransition.scale(scale: 1.04).combined(with: .opacity)
 
     var body: some View {
         GeometryReader { geo in
@@ -509,22 +511,26 @@ struct FeedView: View {
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 30))
     }
 
-    private func appScreen(_ name: String) -> some View {
-        ZStack(alignment: .topLeading) {
-            Color.gameBG
-            Text(name)
-                .font(.title2)
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Button {
-                openApp = nil
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 22, weight: .semibold))
+    @ViewBuilder private func appScreen(_ name: String) -> some View {
+        if name == "settings" {
+            SettingsView { openApp = nil }
+        } else {
+            ZStack(alignment: .topLeading) {
+                Color.gameBG
+                Text(name)
+                    .font(.title2)
                     .foregroundStyle(.white)
-                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Button {
+                    openApp = nil
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(24)
+                }
+                .padding(.top, 54)
             }
-            .padding(.top, 54)
         }
     }
 
@@ -609,7 +615,8 @@ struct FeedView: View {
                                   displayLevel: Self.displayLevel(for: index),
                                   adPowerup: Self.adLevels[index],
                                   isBoss: Self.bossLevels.contains(index),
-                                  scene: scenes[index])
+                                  scene: scenes[index],
+                                  paused: !showGame)
                         .frame(width: geo.size.width, height: h)
                         .offset(y: scrollOffset + CGFloat(index - currentLevel) * h)
                 }
@@ -651,6 +658,100 @@ struct FeedView: View {
             scenes[index + 1].beginEntry()
             saveProgress()
         }
+    }
+}
+
+// the fake settings app, performance and quality knobs for now
+private struct SettingsView: View {
+    @ObservedObject private var settings = GameSettings.shared
+    var onBack: () -> Void
+
+    // frame rate stores the raw hz, mapped to and from the option index
+    private var frameIndex: Binding<Int> {
+        Binding(get: { [60, 90, 120].firstIndex(of: settings.framerate) ?? 2 },
+                set: { settings.framerate = [60, 90, 120][$0] })
+    }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.gameBG.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    sectionHeader("Performance", "gauge.with.dots.needle.67percent")
+                    VStack(spacing: 2) {
+                        row("Frame Rate", ["60", "90", "120"], frameIndex)
+                        row("Graphics", ["Low", "Medium", "High"], $settings.graphics)
+                        row("Particles", ["Off", "Low", "Medium", "High"], $settings.particles)
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.top, 166)
+                .padding(.bottom, 40)
+            }
+            header
+        }
+    }
+
+    // the title floats over the content, a frosted band blurs whatever scrolls under
+    // it and a soft dark halo hugs the word so it stays readable
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 36, height: 36).glassEffect(.regular, in: Circle())
+                }
+                Spacer()
+            }
+            Text("Settings").font(.system(size: 30, weight: .bold))
+                .wordBlur()
+                .padding(.top, 10)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.top, 58)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // progressive glass blur, blurriest at the top and easing to nothing
+        .background { ProgressiveHeaderBlur() }
+        .ignoresSafeArea(edges: .top)
+    }
+
+    // a big category header the way game menus title their groups
+    private func sectionHeader(_ title: String, _ icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 22, weight: .semibold))
+            Text(title.uppercased()).font(.system(size: 22, weight: .heavy)).kerning(1)
+        }
+        .foregroundStyle(.white)
+    }
+
+    // a setting name with a glass dropdown of its options on the trailing side
+    private func row(_ label: String, _ options: [String], _ selection: Binding<Int>) -> some View {
+        HStack {
+            Text(label).font(.body).bold()
+            Spacer()
+            Menu {
+                ForEach(options.indices, id: \.self) { i in
+                    Button {
+                        selection.wrappedValue = i
+                    } label: {
+                        if selection.wrappedValue == i { Label(options[i], systemImage: "checkmark") }
+                        else { Text(options[i]) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(options[selection.wrappedValue]).font(.subheadline).bold()
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14).frame(height: 34)
+                .glassEffect(.regular, in: Capsule())
+            }
+        }
+        .padding(.vertical, 10)
     }
 }
 

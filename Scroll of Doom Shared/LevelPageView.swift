@@ -1,6 +1,72 @@
 #if os(iOS)
 import SwiftUI
 import SpriteKit
+import Combine
+import UIKit
+
+// a uikit blur whose strength can be dialed down well below a full material, so it
+// reads as a light blur rather than a frosted wall
+struct LightBlur: UIViewRepresentable {
+    var intensity: CGFloat = 0.18   // 0 none, 1 full material
+
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        let v = UIVisualEffectView(effect: nil)
+        context.coordinator.view = v
+        return v
+    }
+    func updateUIView(_ v: UIVisualEffectView, context: Context) {
+        context.coordinator.set(intensity)
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        weak var view: UIVisualEffectView?
+        private var animator: UIViewPropertyAnimator?
+        func set(_ x: CGFloat) {
+            animator?.stopAnimation(true)
+            guard let view else { return }
+            let a = UIViewPropertyAnimator(duration: 1, curve: .linear) { [weak view] in
+                view?.effect = UIBlurEffect(style: .systemThinMaterialDark)
+            }
+            a.pausesOnCompletion = true
+            a.fractionComplete = min(max(x, 0.001), 0.999)
+            animator = a
+        }
+    }
+}
+
+extension View {
+    // a faint black blur hugging the title so it reads over the header blur and content
+    func wordBlur() -> some View {
+        self.padding(.horizontal, 12).padding(.vertical, 4)
+            .background {
+                RoundedRectangle(cornerRadius: 20).fill(.black.opacity(0.22)).blur(radius: 12)
+            }
+    }
+}
+
+// a gentle top down progressive blur, several light bands each reaching lower and
+// fading out, so its blurriest at the top and eases to nothing at the bottom
+struct ProgressiveHeaderBlur: View {
+    var layers = 8
+    var perLayer: CGFloat = 0.05
+    var body: some View {
+        ZStack {
+            ForEach(0..<layers, id: \.self) { i in
+                let end = CGFloat(i + 1) / CGFloat(layers)
+                // longer overlapping fades so neighbouring bands blend, keeping the
+                // blur close between adjacent steps instead of jumping
+                let hold = max(0, end - 2.5 / CGFloat(layers))
+                LightBlur(intensity: perLayer)
+                    .mask(LinearGradient(stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: hold),
+                        .init(color: .clear, location: end)
+                    ], startPoint: .top, endPoint: .bottom))
+            }
+        }
+    }
+}
 
 // the app background, a very dark gray instead of pure black so surfaces read apart
 extension Color { static let gameBG = Color(white: 0.10) }
@@ -8,6 +74,63 @@ extension UIColor { static let gameBG = UIColor(white: 0.10, alpha: 1) }
 
 // flip to true to show the on screen fps / node / draw overlay while debugging
 enum PerfHUD { static let on = false }
+
+// MARK: - Settings
+
+// performance and quality options, persisted and read by the scene and sprite view
+final class GameSettings: ObservableObject {
+    static let shared = GameSettings()
+    private let d = UserDefaults.standard
+
+    @Published var framerate: Int { didSet { d.set(framerate, forKey: "set.framerate") } }
+    @Published var graphics: Int  { didSet { d.set(graphics, forKey: "set.graphics") } }   // 0 low, 1 med, 2 high
+    @Published var particles: Int { didSet { d.set(particles, forKey: "set.particles") } }  // 0 off, 1 low, 2 med, 3 high
+
+    private init() {
+        d.register(defaults: ["set.framerate": 120, "set.graphics": 2, "set.particles": 3])
+        framerate = d.integer(forKey: "set.framerate")
+        graphics = d.integer(forKey: "set.graphics")
+        particles = d.integer(forKey: "set.particles")
+    }
+
+    // how many pixels to render, lower graphics renders the scene smaller and scales up
+    var renderScale: CGFloat { [0.6, 0.8, 1.0][min(max(graphics, 0), 2)] }
+    // scales every particle burst, off drops them entirely
+    var particleFactor: CGFloat { [0, 0.4, 0.7, 1.0][min(max(particles, 0), 3)] }
+}
+
+// wraps an SKView so we can drop the render resolution and set the framerate live
+struct GameSpriteView: UIViewRepresentable {
+    let scene: SKScene
+    var renderScale: CGFloat = 1
+    var framerate: Int = 120
+    var paused: Bool = false   // stop rendering entirely, eg while hidden behind a menu
+
+    func makeUIView(context: Context) -> SKView {
+        let v = SKView()
+        v.ignoresSiblingOrder = true
+        v.presentScene(scene)
+        apply(v)
+        return v
+    }
+
+    func updateUIView(_ v: SKView, context: Context) {
+        if v.scene !== scene { v.presentScene(scene) }
+        apply(v)
+    }
+
+    private func apply(_ v: SKView) {
+        v.preferredFramesPerSecond = framerate
+        v.isPaused = paused
+        let native = v.window?.screen.nativeScale ?? UIScreen.main.scale
+        // fewer pixels drawn then scaled up, a real fill rate saving
+        v.contentScaleFactor = max(1, native * renderScale)
+        v.layer.contentsScale = v.contentScaleFactor
+        v.showsFPS = PerfHUD.on
+        v.showsNodeCount = PerfHUD.on
+        v.showsDrawCount = PerfHUD.on
+    }
+}
 
 // home/search move, create is the gate, profile jumps
 struct GameTabBar: View {
@@ -129,6 +252,7 @@ struct LevelPageView: View {
     let adPowerup: Powerup?
     let isBoss: Bool
     let scene: LevelScene
+    var paused: Bool = false
 
     private var isAd: Bool { adPowerup != nil }
 
@@ -136,13 +260,13 @@ struct LevelPageView: View {
     @State private var heartFilled = false
     @State private var bossPromptShown = false
     @State private var bossSlotFilled = false
+    @ObservedObject private var settings = GameSettings.shared
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.gameBG
-            SpriteView(scene: scene, preferredFramesPerSecond: 120,
-                       options: [.ignoresSiblingOrder],
-                       debugOptions: PerfHUD.on ? [.showsFPS, .showsNodeCount, .showsDrawCount] : [])
+            GameSpriteView(scene: scene, renderScale: settings.renderScale,
+                           framerate: settings.framerate, paused: paused)
             engagementRail
             caption
             if bossPromptShown {
