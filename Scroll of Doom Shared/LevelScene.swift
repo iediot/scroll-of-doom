@@ -7,13 +7,17 @@ struct PlatformData: Codable, Identifiable, Equatable {
     var id = UUID()
     var x: Double        // center, fraction of width
     var y: Double        // fraction of height from the bottom
-    var w: Double        // length, fraction of screen width
+    var w: Double        // length or spike size, fraction of screen width
     var vertical: Bool?  // optional so old saves still decode
+    var spike: Bool?     // a deadly triangle instead of a solid bar
     var ox: Double?      // pixel offset within the grid cell, right
     var oy: Double?      // pixel offset within the grid cell, up
+    var rot: Double?     // rotation in degrees, clockwise
     var isVertical: Bool { vertical == true }
+    var isSpike: Bool { spike == true }
     var offX: Double { ox ?? 0 }
     var offY: Double { oy ?? 0 }
+    var rotation: Double { rot ?? 0 }
 }
 
 struct LevelData: Codable, Identifiable, Equatable {
@@ -59,7 +63,7 @@ final class LevelScene: SKScene {
     private let jumpSpeed: CGFloat = 751
     private let gravityY: CGFloat = -26
     // coyote time and jump buffering
-    private let coyoteTime: TimeInterval = 0.08
+    private let coyoteTime: TimeInterval = 0.14
     private let jumpBufferTime: TimeInterval = 0.12
     private let edgeInset: CGFloat = 4
     // matches the create button column in the tab bar
@@ -70,6 +74,7 @@ final class LevelScene: SKScene {
         static let heart:    UInt32 = 0x1 << 2
         static let wings:    UInt32 = 0x1 << 3
         static let platform: UInt32 = 0x1 << 4   // custom platforms and walls, phased through on entry
+        static let spike:    UInt32 = 0x1 << 5   // deadly, resets the level to the drop in point
     }
 
     var levelIndex = 0
@@ -103,6 +108,11 @@ final class LevelScene: SKScene {
     private let barWidth: CGFloat = 3.3
     private let barColor = UIColor(white: 0.8, alpha: 1)
     private var barOutline: CGFloat { barWidth + 2 * barWidth / 3 }
+    // spikes fit inside their grid footprint with a margin, a tall isosceles triangle
+    // so its pointing direction reads clearly, hitbox a forgiving core
+    static let spikeScale: CGFloat = 0.8
+    static let spikeHeightRatio: CGFloat = 1.2
+    static let spikeHitScale = CGSize(width: 0.32, height: 0.4)
 
     private var player: SKNode!
     private var squishBottom: SKNode!   // squishes scale from the cubes feet, purely visual
@@ -128,6 +138,10 @@ final class LevelScene: SKScene {
     private var hatchNode: SKNode?
     private var platformsNode: SKNode?
     private var platformSegments: [(a: CGPoint, b: CGPoint)] = []   // for the save thumbnail
+    private var spikeTriangles: [(c: CGPoint, base: CGFloat, height: CGFloat, rad: CGFloat)] = []
+    private var levelEntryFrac: CGFloat = 0.5   // where the cube first dropped in, for spike resets
+    private var pendingDeath = false
+    private var dying = false
     private var hatchCenter: CGPoint = .zero
     private var hasKey = false
     private var hatchUnlocked = false
@@ -219,6 +233,8 @@ final class LevelScene: SKScene {
 
     private func buildLevel() {
         removeAllChildren()
+        dying = false
+        pendingDeath = false
         addWallpaper()
         let restore = pendingRestore
         pendingRestore = nil
@@ -439,10 +455,12 @@ final class LevelScene: SKScene {
         let node = SKNode()
         node.zPosition = 5
         platformSegments = []
+        spikeTriangles = []
 
         // every bar draws into one shared path, physics bodies stay per segment, so the
         // whole level is only two shape node draw calls instead of two per platform
         let visual = CGMutablePath()
+        let spikePath = CGMutablePath()
         func drawBar(_ a: CGPoint, _ b: CGPoint) {
             visual.move(to: a); visual.addLine(to: b)
             platformSegments.append((a, b))
@@ -454,17 +472,50 @@ final class LevelScene: SKScene {
             n.physicsBody = body
             node.addChild(n)
         }
+        // rotate a point about a center, clockwise degrees like the editor shows
+        func rot(_ p: CGPoint, _ c: CGPoint, _ rad: CGFloat) -> CGPoint {
+            if rad == 0 { return p }
+            let dx = p.x - c.x, dy = p.y - c.y
+            return CGPoint(x: c.x + dx * cos(rad) + dy * sin(rad),
+                           y: c.y - dx * sin(rad) + dy * cos(rad))
+        }
+        // a triangle pointing up plus a small forgiving hitbox in its middle
+        func addSpike(_ cx: CGFloat, _ cy: CGFloat, _ size: CGFloat, _ rad: CGFloat) {
+            let base = size * Self.spikeScale
+            let h = base * Self.spikeHeightRatio
+            let c = CGPoint(x: cx, y: cy)
+            let apex = rot(CGPoint(x: cx, y: cy + h / 2), c, rad)
+            let bl = rot(CGPoint(x: cx - base / 2, y: cy - h / 2), c, rad)
+            let br = rot(CGPoint(x: cx + base / 2, y: cy - h / 2), c, rad)
+            spikePath.move(to: bl); spikePath.addLine(to: apex); spikePath.addLine(to: br); spikePath.closeSubpath()
+            spikeTriangles.append((c, base, h, rad))
+            let hb = SKNode()
+            hb.position = c
+            hb.zRotation = rad
+            let body = SKPhysicsBody(rectangleOf: CGSize(width: base * Self.spikeHitScale.width,
+                                                         height: h * Self.spikeHitScale.height))
+            body.isDynamic = false
+            body.categoryBitMask = Cat.spike
+            hb.physicsBody = body
+            node.addChild(hb)
+        }
 
         if let c = customLevel {
             for p in c.platforms {
                 let cx = CGFloat(p.x) * size.width + CGFloat(p.offX)
                 let cy = CGFloat(p.y) * size.height + CGFloat(p.offY)
                 let len = CGFloat(p.w) * size.width
-                if p.isVertical {
-                    drawBar(CGPoint(x: cx, y: cy - len / 2), CGPoint(x: cx, y: cy + len / 2))
+                let rad = CGFloat(p.rotation) * .pi / 180
+                let ctr = CGPoint(x: cx, y: cy)
+                if p.isSpike {
+                    addSpike(cx, cy, len, rad)
+                } else if p.isVertical {
+                    drawBar(rot(CGPoint(x: cx, y: cy - len / 2), ctr, rad),
+                            rot(CGPoint(x: cx, y: cy + len / 2), ctr, rad))
                     // a thin solid body the wall's own width so its top holds the player up
                     let wall = SKNode()
-                    wall.position = CGPoint(x: cx, y: cy)
+                    wall.position = ctr
+                    wall.zRotation = rad
                     let wb = SKPhysicsBody(rectangleOf: CGSize(width: barWidth, height: len))
                     wb.isDynamic = false
                     wb.categoryBitMask = Cat.platform
@@ -472,7 +523,8 @@ final class LevelScene: SKScene {
                     wall.physicsBody = wb
                     node.addChild(wall)
                 } else {
-                    let a = CGPoint(x: cx - len / 2, y: cy), b = CGPoint(x: cx + len / 2, y: cy)
+                    let a = rot(CGPoint(x: cx - len / 2, y: cy), ctr, rad)
+                    let b = rot(CGPoint(x: cx + len / 2, y: cy), ctr, rad)
                     drawBar(a, b); edgeBody(a, b, Cat.platform)
                 }
             }
@@ -496,6 +548,18 @@ final class LevelScene: SKScene {
         let core = SKShapeNode(path: visual)
         core.strokeColor = barColor; core.lineWidth = barWidth; core.lineCap = .round; core.zPosition = 1
         node.addChild(core)
+
+        // spikes, a black rim then a grayer fill, same widths as the bars
+        if !spikePath.isEmpty {
+            let spikeRim = SKShapeNode(path: spikePath)
+            spikeRim.fillColor = .black; spikeRim.strokeColor = .black
+            spikeRim.lineWidth = barOutline; spikeRim.lineJoin = .round; spikeRim.zPosition = 0
+            node.addChild(spikeRim)
+            let spikeFill = SKShapeNode(path: spikePath)
+            spikeFill.fillColor = barColor; spikeFill.strokeColor = barColor
+            spikeFill.lineWidth = barWidth; spikeFill.lineJoin = .round; spikeFill.zPosition = 1
+            node.addChild(spikeFill)
+        }
 
         addChild(node)
         platformsNode = node
@@ -566,15 +630,42 @@ final class LevelScene: SKScene {
     }
 
     private func respawnCube() {
-        let x = pendingEntryFrac.map { $0 * size.width } ?? boxMidX
+        levelEntryFrac = pendingEntryFrac ?? (boxMidX / size.width)
         pendingEntryFrac = nil
-        player.position = CGPoint(x: x, y: boxTopY - 40)
+        player.position = CGPoint(x: levelEntryFrac * size.width, y: boxTopY - 40)
         player.physicsBody?.velocity = .zero
         player.physicsBody?.isDynamic = true
         player.isHidden = false
         hasFallenThrough = false
         // drop in phasing through platforms, solid again once it lands on the floor
         beginEntryPhasing(customLevel != nil)
+    }
+
+    // the cube gets sucked into itself like a little black hole, then the level resets
+    private func startDeath() {
+        dying = true
+        pendingDeath = false
+        player.physicsBody?.velocity = .zero
+        player.physicsBody?.isDynamic = false
+        squishBottom?.removeAllActions()
+        walkNode?.removeAllActions()
+        walking = false
+        // a brief flick outward then an accelerating implosion with a spin
+        let pop = SKAction.scale(to: 1.18, duration: 0.08); pop.timingMode = .easeOut
+        let suck = SKAction.group([.scale(to: 0.01, duration: 0.34),
+                                   .rotate(byAngle: .pi * 3, duration: 0.34),
+                                   .fadeAlpha(to: 0.15, duration: 0.34)])
+        suck.timingMode = .easeIn
+        player.run(.sequence([pop, suck, .wait(forDuration: 0.06),
+                              .run { [weak self] in self?.finishDeath() }]))
+    }
+
+    // resets the whole level, dropping the cube back in from where it first fell
+    private func finishDeath() {
+        dying = false
+        pendingRestore = nil
+        pendingEntryFrac = levelEntryFrac
+        buildLevel()
     }
 
     private func placeCube(fracX: Double, fracY: Double) {
@@ -652,6 +743,22 @@ final class LevelScene: SKScene {
             // platforms and walls
             for seg in platformSegments {
                 drawBar(pt(seg.a), pt(seg.b))
+            }
+            // spikes, filled gray triangle with a black rim
+            func spinPt(_ p: CGPoint, _ c: CGPoint, _ rad: CGFloat) -> CGPoint {
+                if rad == 0 { return p }
+                let dx = p.x - c.x, dy = p.y - c.y
+                return CGPoint(x: c.x + dx * cos(rad) + dy * sin(rad),
+                               y: c.y - dx * sin(rad) + dy * cos(rad))
+            }
+            for s in spikeTriangles {
+                let apex = pt(spinPt(CGPoint(x: s.c.x, y: s.c.y + s.height / 2), s.c, s.rad))
+                let bl = pt(spinPt(CGPoint(x: s.c.x - s.base / 2, y: s.c.y - s.height / 2), s.c, s.rad))
+                let br = pt(spinPt(CGPoint(x: s.c.x + s.base / 2, y: s.c.y - s.height / 2), s.c, s.rad))
+                cg.move(to: bl); cg.addLine(to: apex); cg.addLine(to: br); cg.closePath()
+                cg.setFillColor(barColor.cgColor); cg.fillPath()
+                cg.move(to: bl); cg.addLine(to: apex); cg.addLine(to: br); cg.closePath()
+                cg.setStrokeColor(UIColor.black.cgColor); cg.setLineWidth(barWidth * scale); cg.strokePath()
             }
             // locked gate spans the floor
             if !hatchUnlocked {
@@ -799,7 +906,7 @@ final class LevelScene: SKScene {
     private func wallBeneath() -> Bool {
         guard let c = customLevel, let player else { return false }
         let feet = player.position.y - modelSize / 2
-        for p in c.platforms where p.isVertical {
+        for p in c.platforms where p.isVertical && p.rotation == 0 {
             let cx = CGFloat(p.x) * size.width + CGFloat(p.offX)
             let top = CGFloat(p.y) * size.height + CGFloat(p.offY) + CGFloat(p.w) * size.width / 2
             if abs(player.position.x - cx) <= hitW / 2, feet <= top + 4, feet >= top - 6 {
@@ -821,6 +928,9 @@ final class LevelScene: SKScene {
         let hy0 = feet + 2, hy1 = feet + hitH - 2   // hitbox height, inset a hair
         var limit: CGFloat?
         for seg in platformSegments {
+            // rotated bars are slanted, their box would blanket a huge area, so let the
+            // physics engine handle those and only clamp axis aligned bars here
+            if abs(seg.a.x - seg.b.x) > 0.5 && abs(seg.a.y - seg.b.y) > 0.5 { continue }
             let rx0 = min(seg.a.x, seg.b.x) - barWidth / 2
             let rx1 = max(seg.a.x, seg.b.x) + barWidth / 2
             let ry0 = min(seg.a.y, seg.b.y) - barWidth / 2
@@ -993,7 +1103,7 @@ final class LevelScene: SKScene {
         body.friction = 0
         body.linearDamping = 0
         body.categoryBitMask = Cat.player
-        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings
+        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings | Cat.spike
         body.collisionBitMask = Cat.ground
         body.usesPreciseCollisionDetection = true
         return body
@@ -1023,6 +1133,10 @@ final class LevelScene: SKScene {
     override func update(_ currentTime: TimeInterval) {
         guard player != nil else { return }
         sceneTime = currentTime
+
+        // a spike was touched, play the implosion then reset, freeze the cube meanwhile
+        if pendingDeath, !dying { startDeath() }
+        if dying { return }
 
         // catches resizes the events missed
         if size != lastLayoutSize {
@@ -1070,12 +1184,14 @@ final class LevelScene: SKScene {
         // raycast under the hitboxs bottom corners, ignoring phased through platforms
         let groundMask = entryPhasing ? Cat.ground : Cat.ground | Cat.platform
         var grounded = false
-        if body.velocity.dy <= 20 {
+        // a higher gate and longer reach so a slope, where the cube rides slightly off
+        // its feet and the vertical speed jitters, still reads as grounded each frame
+        if body.velocity.dy <= 80 {
             let foot = hitW / 2 - 1
             // includes a center ray so a thin wall directly underneath still grounds
             for ox in [-foot, 0, foot] {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
-                let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 6)
+                let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 10)
                 physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
                     if hit.categoryBitMask & groundMask != 0 {
                         grounded = true
@@ -1087,7 +1203,7 @@ final class LevelScene: SKScene {
         }
         // the narrow wall top holds the player through physics, this just makes the
         // whole standable width jumpable since the foot rays can miss a thin top
-        if !grounded, body.velocity.dy <= 20, !entryPhasing, wallBeneath() {
+        if !grounded, body.velocity.dy <= 80, !entryPhasing, wallBeneath() {
             grounded = true
         }
         if grounded {
@@ -1181,7 +1297,7 @@ final class LevelScene: SKScene {
 
     // runs after the physics step
     override func didSimulatePhysics() {
-        guard let body = player?.physicsBody, !hasFallenThrough else { return }
+        guard let body = player?.physicsBody, !hasFallenThrough, !dying else { return }
         let wallHalf = modelSize / 2
         let wallMin = edgeInset + wallHalf
         let wallMax = size.width - edgeInset - wallHalf
@@ -1224,6 +1340,8 @@ extension LevelScene: SKPhysicsContactDelegate {
                     .removeFromParent()
                 ]))
             }
+        case Cat.spike:
+            pendingDeath = true
         default:
             break
         }

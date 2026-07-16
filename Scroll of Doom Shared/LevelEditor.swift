@@ -9,6 +9,18 @@ private enum GameRef {
     static var barHeight: CGFloat { GameTabBar.height }
 }
 
+// an upward triangle, the spike hazard
+struct SpikeShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.midX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
 // MARK: - My Levels hub (opened from the Photos app)
 
 struct MyLevelsView: View {
@@ -314,16 +326,37 @@ private struct LevelPreview: View {
         gate.addLine(to: CGPoint(x: br.x, y: br.y))
         bar(gate, cap: .butt)
 
-        // platforms and walls
+        // platforms, walls and spikes
         for p in level.platforms {
             let cx = CGFloat(p.x) * ref.width + CGFloat(p.offX)
             let cy = CGFloat(p.y) * ref.height + CGFloat(p.offY)
             let len = CGFloat(p.w) * ref.width
+            let rad = CGFloat(p.rotation) * .pi / 180
+            // rotate a game point about the item center then map to the tile
+            func spin(_ gx: CGFloat, _ gy: CGFloat) -> CGPoint {
+                if rad == 0 { return point(gx, gy, f) }
+                let dx = gx - cx, dy = gy - cy
+                return point(cx + dx * cos(rad) + dy * sin(rad), cy - dx * sin(rad) + dy * cos(rad), f)
+            }
+            if p.isSpike {
+                let bb = len * LevelScene.spikeScale
+                let hh = bb * LevelScene.spikeHeightRatio
+                var tri = Path()
+                tri.move(to: spin(cx - bb / 2, cy - hh / 2))
+                tri.addLine(to: spin(cx, cy + hh / 2))
+                tri.addLine(to: spin(cx + bb / 2, cy - hh / 2))
+                tri.closeSubpath()
+                // black rim, grayer fill, gray edge, same as the bars
+                ctx.stroke(tri, with: .color(.black), style: StrokeStyle(lineWidth: rim, lineJoin: .round))
+                ctx.fill(tri, with: .color(Color(white: 0.8)))
+                ctx.stroke(tri, with: .color(Color(white: 0.8)), style: StrokeStyle(lineWidth: line, lineJoin: .round))
+                continue
+            }
             var seg = Path()
             if p.isVertical {
-                seg.move(to: point(cx, cy - len / 2, f)); seg.addLine(to: point(cx, cy + len / 2, f))
+                seg.move(to: spin(cx, cy - len / 2)); seg.addLine(to: spin(cx, cy + len / 2))
             } else {
-                seg.move(to: point(cx - len / 2, cy, f)); seg.addLine(to: point(cx + len / 2, cy, f))
+                seg.move(to: spin(cx - len / 2, cy)); seg.addLine(to: spin(cx + len / 2, cy))
             }
             bar(seg, cap: .round)
         }
@@ -345,6 +378,8 @@ struct LevelEditorView: View {
     @State private var multiAnchors: [UUID: CGPoint] = [:]
     @State private var showProps = false
     @State private var showPowerups = false
+    @State private var showRotate = false
+    @State private var rotateText = ""
     @State private var playing = false
     @State private var heartPlaced: Bool
     @State private var draggingNewPlatform: UUID?
@@ -458,6 +493,7 @@ struct LevelEditorView: View {
         let targets = propsTargets()
         if let first = targets.first {
             let vert = level.platforms[first].isVertical
+            let spike = level.platforms[first].isSpike
             // length in half cells, so it steps 0.5, 1, 1.5, 2 ... applied to all
             let halves = Binding<Int>(
                 get: { max(1, Int((level.platforms[first].w * gridCols * 2).rounded())) },
@@ -469,7 +505,8 @@ struct LevelEditorView: View {
                         let c = CGPoint(x: CGFloat(level.platforms[i].x) * W,
                                         y: (1 - CGFloat(level.platforms[i].y)) * H)
                         let s = snapPlatform(c, w: W, lengthCells: CGFloat(n) / 2,
-                                             vertical: level.platforms[i].isVertical)
+                                             vertical: level.platforms[i].isVertical,
+                                             spike: level.platforms[i].isSpike)
                         level.platforms[i].x = fx(s.x, W)
                         level.platforms[i].y = fy(s.y, H)
                     }
@@ -489,15 +526,21 @@ struct LevelEditorView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text(targets.count > 1 ? "Properties · \(targets.count)" : "Properties")
                     .font(.title2).bold()
-                propRow(vert ? "Height" : "Length",
+                propRow(spike ? "Size" : (vert ? "Height" : "Length"),
                         String(format: "%g squares", Double(halves.wrappedValue) / 2),
                         halves, 1...Int(gridCols * 2))
                 propRow("X Offset", "\(ox.wrappedValue) px", ox, 0...maxOff)
                 propRow("Y Offset", "\(oy.wrappedValue) px", oy, 0...maxOff)
+                rotationRow(Int(level.platforms[first].rotation))
             }
             .foregroundStyle(.white)
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .alert("Rotation", isPresented: $showRotate) {
+                TextField("1 - 359", text: $rotateText).keyboardType(.numberPad)
+                Button("Set") { applyRotation() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Degrees clockwise, 1 to 359") }
         }
     }
 
@@ -508,6 +551,30 @@ struct LevelEditorView: View {
             Text(value).font(.headline).monospacedDigit().foregroundStyle(.secondary)
             Stepper("", value: binding, in: range).labelsHidden()
         }
+    }
+
+    // opens a typed prompt for the rotation degrees
+    private func rotationRow(_ current: Int) -> some View {
+        Button {
+            rotateText = current == 0 ? "" : "\(current)"
+            showRotate = true
+        } label: {
+            HStack {
+                Text("Rotation").font(.headline)
+                Spacer()
+                Text("\(current)°").font(.headline).monospacedDigit().foregroundStyle(.secondary)
+                Image(systemName: "pencil").font(.system(size: 14)).foregroundStyle(.secondary)
+            }
+            .frame(height: 32)   // matches the height the stepper rows get
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+    }
+
+    private func applyRotation() {
+        let v = Int(rotateText.trimmingCharacters(in: .whitespaces)) ?? 0
+        let deg = v <= 0 ? 0 : min(v, 359)
+        for i in propsTargets() { level.platforms[i].rot = deg == 0 ? nil : Double(deg) }
     }
 
     private var powerupsSheet: some View {
@@ -581,9 +648,10 @@ struct LevelEditorView: View {
             Spacer()
             VStack(spacing: 0) {
                 Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
-                HStack(spacing: 40) {
+                HStack(spacing: 28) {
                     platformPaletteItem(vertical: false, w: w, h: h)
                     platformPaletteItem(vertical: true, w: w, h: h)
+                    platformPaletteItem(spike: true, w: w, h: h)
 
                     Image("cube.heart").resizable().scaledToFit().frame(width: 30, height: 30)
                         .opacity(heartPlaced ? 0.3 : 1)
@@ -606,25 +674,40 @@ struct LevelEditorView: View {
         }
     }
 
-    // a draggable platform icon in the palette, horizontal or vertical
-    private func platformPaletteItem(vertical: Bool, w: CGFloat, h: CGFloat) -> some View {
-        ZStack {
-            Capsule().fill(.black)
-                .frame(width: vertical ? 7.7 : 49, height: vertical ? 43 : 7.7)
-            Capsule().fill(Color(white: 0.8))
-                .frame(width: vertical ? 4.4 : 46, height: vertical ? 40 : 4.4)
+    // a draggable icon in the palette, a horizontal bar, a wall, or a spike
+    private func platformPaletteItem(vertical: Bool = false, spike: Bool = false,
+                                     w: CGFloat, h: CGFloat) -> some View {
+        Group {
+            if spike {
+                ZStack {
+                    SpikeShape().fill(.black)
+                        .overlay(SpikeShape().stroke(.black, style: StrokeStyle(lineWidth: 4, lineJoin: .round)))
+                    SpikeShape().fill(Color(white: 0.8))
+                        .overlay(SpikeShape().stroke(Color(white: 0.8), style: StrokeStyle(lineWidth: 2.4, lineJoin: .round)))
+                }
+                .frame(width: 30, height: 27)
+            } else {
+                ZStack {
+                    Capsule().fill(.black)
+                        .frame(width: vertical ? 7.7 : 49, height: vertical ? 43 : 7.7)
+                    Capsule().fill(Color(white: 0.8))
+                        .frame(width: vertical ? 4.4 : 46, height: vertical ? 40 : 4.4)
+                }
+            }
         }
-            .frame(width: 56, height: 46).contentShape(Rectangle())
+            .frame(width: 52, height: 46).contentShape(Rectangle())
             .gesture(DragGesture(coordinateSpace: .named("screen"))
                 .onChanged { v in
-                    let cells = vertical ? 4 : 5
-                    let s = snapPlatform(toCanvas(v.location, w, h), w: w, lengthCells: CGFloat(cells), vertical: vertical)
+                    let cells = spike ? 1 : (vertical ? 4 : 5)
+                    let s = snapPlatform(toCanvas(v.location, w, h), w: w, lengthCells: CGFloat(cells),
+                                         vertical: vertical, spike: spike)
                     if let id = draggingNewPlatform, let i = level.platforms.firstIndex(where: { $0.id == id }) {
                         level.platforms[i].x = fx(s.x, w)
                         level.platforms[i].y = fy(s.y, h)
                     } else {
                         let p = PlatformData(x: fx(s.x, w), y: fy(s.y, h),
-                                             w: Double(cells) / Double(gridCols), vertical: vertical ? true : nil)
+                                             w: Double(cells) / Double(gridCols),
+                                             vertical: vertical ? true : nil, spike: spike ? true : nil)
                         level.platforms.append(p)
                         draggingNewPlatform = p.id
                         selected = p.id
@@ -640,14 +723,31 @@ struct LevelEditorView: View {
         let cy = (1 - CGFloat(p.wrappedValue.y)) * h - CGFloat(p.wrappedValue.offY)
         let len = CGFloat(p.wrappedValue.w) * w
         let vert = p.wrappedValue.isVertical
+        let spike = p.wrappedValue.isSpike
+        let spikeBase = len * LevelScene.spikeScale
+        let spikeH = spikeBase * LevelScene.spikeHeightRatio
         return ZStack {
-            // black rim all around, grayer bar on top, matching the game
-            Capsule().fill(.black)
-                .frame(width: vert ? 5.5 : len + 2.2, height: vert ? len + 2.2 : 5.5)
-            Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
-                .frame(width: vert ? 3.3 : len, height: vert ? len : 3.3)
+            if spike {
+                // black rim then grayer fill, same rim widths as the bars
+                ZStack {
+                    SpikeShape().fill(.black)
+                        .overlay(SpikeShape().stroke(.black, style: StrokeStyle(lineWidth: 5.5, lineJoin: .round)))
+                    SpikeShape().fill(isSel ? Color.yellow : Color(white: 0.8))
+                        .overlay(SpikeShape().stroke(isSel ? Color.yellow : Color(white: 0.8),
+                                                     style: StrokeStyle(lineWidth: 3.3, lineJoin: .round)))
+                }
+                .frame(width: spikeBase, height: spikeH)
+            } else {
+                // black rim all around, grayer bar on top, matching the game
+                Capsule().fill(.black)
+                    .frame(width: vert ? 5.5 : len + 2.2, height: vert ? len + 2.2 : 5.5)
+                Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
+                    .frame(width: vert ? 3.3 : len, height: vert ? len : 3.3)
+            }
         }
-            .frame(width: vert ? 30 : max(len, 44), height: vert ? max(len, 44) : 30)
+            .frame(width: spike ? max(len, 44) : (vert ? 30 : max(len, 44)),
+                   height: spike ? max(spikeH, 44) : (vert ? max(len, 44) : 30))
+            .rotationEffect(.degrees(p.wrappedValue.rotation))
             .contentShape(Rectangle())
             .position(x: cx, y: cy)
             .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("screen"))
@@ -674,7 +774,7 @@ struct LevelEditorView: View {
                         guard let a = dragAnchor else { return }
                         let lc = CGFloat(p.wrappedValue.w) * gridCols
                         let s = snapPlatform(CGPoint(x: a.x + t.width, y: a.y + t.height),
-                                             w: w, lengthCells: lc, vertical: vert)
+                                             w: w, lengthCells: lc, vertical: vert, spike: spike)
                         p.wrappedValue.x = fx(s.x, w)
                         p.wrappedValue.y = fy(s.y, h)
                     }
@@ -689,15 +789,16 @@ struct LevelEditorView: View {
             }
     }
 
-    // drag every selected platform by the same finger translation, each snapped to grid
+    // move the whole selection by one shared whole cell delta, so mixed item types
+    // keep their relative positions instead of each snapping to its own grid
     private func moveGroup(translation: CGSize, w: CGFloat, h: CGFloat) {
+        let cell = w / gridCols
+        let dx = (translation.width / cell).rounded() * cell
+        let dy = (translation.height / cell).rounded() * cell
         for sid in multiSelected {
             guard let a = multiAnchors[sid], let i = level.platforms.firstIndex(where: { $0.id == sid }) else { continue }
-            let lc = CGFloat(level.platforms[i].w) * gridCols
-            let s = snapPlatform(CGPoint(x: a.x + translation.width, y: a.y + translation.height),
-                                 w: w, lengthCells: lc, vertical: level.platforms[i].isVertical)
-            level.platforms[i].x = fx(s.x, w)
-            level.platforms[i].y = fy(s.y, h)
+            level.platforms[i].x = fx(a.x + dx, w)
+            level.platforms[i].y = fy(a.y + dy, h)
         }
     }
 
@@ -748,10 +849,12 @@ struct LevelEditorView: View {
 
     // snap a bar so its near end lands on a grid line, along its long axis, and its
     // thin axis sits on a line too, length is in cells and can be a half
-    private func snapPlatform(_ center: CGPoint, w: CGFloat, lengthCells: CGFloat, vertical: Bool) -> CGPoint {
+    private func snapPlatform(_ center: CGPoint, w: CGFloat, lengthCells: CGFloat,
+                              vertical: Bool, spike: Bool = false) -> CGPoint {
         let cell = w / gridCols
         let half = lengthCells * cell / 2
         func line(_ c: CGFloat) -> CGFloat { (c / cell).rounded() * cell }
+        func cellCenter(_ c: CGFloat) -> CGFloat { ((c / cell - 0.5).rounded() + 0.5) * cell }
         // either edge may land on a grid line, whichever the drag is nearer to, so a
         // half length bar can start on a block or end on one
         func edge(_ c: CGFloat) -> CGFloat {
@@ -759,6 +862,9 @@ struct LevelEditorView: View {
             let far = ((c + half) / cell).rounded() * cell - half
             return abs(near - c) <= abs(far - c) ? near : far
         }
+        // spikes edge snap sideways like a bar, so halves place in half a cell and a
+        // whole one centers, and sit centered inside a cell vertically
+        if spike { return CGPoint(x: edge(center.x), y: cellCenter(center.y)) }
         return vertical ? CGPoint(x: line(center.x), y: edge(center.y))
                         : CGPoint(x: edge(center.x), y: line(center.y))
     }
