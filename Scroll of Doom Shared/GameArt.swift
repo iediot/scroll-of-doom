@@ -61,8 +61,18 @@ enum GameArt {
         }
     }
 
-    // the coin still frame used in the editor, outlined like the rest
-    static func coinStillImage() -> UIImage { coinFrame(1) }
+    // the coin still icon, a plain circle with an outline
+    static func coinStillImage() -> UIImage {
+        let s: CGFloat = 32
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false
+        return UIGraphicsImageRenderer(size: CGSize(width: s, height: s), format: fmt).image { _ in
+            let r = CGRect(x: 3, y: 3, width: s - 6, height: s - 6)
+            UIColor(white: 0.85, alpha: 1).setFill()
+            UIBezierPath(ovalIn: r).fill()
+            UIColor.black.setStroke()
+            let ring = UIBezierPath(ovalIn: r); ring.lineWidth = 3; ring.stroke()
+        }
+    }
     static func coinTexture() -> SKTexture { SKTexture(image: coinStillImage()) }
 
     // the full spin, six drawn frames then the same six mirrored, so it reads as a coin turning
@@ -95,6 +105,44 @@ enum GameArt {
                 silhouette.draw(in: rect.offsetBy(dx: cos(a) * thickness, dy: sin(a) * thickness))
             }
             image.draw(in: rect)
+        }
+    }
+
+    // a flattened front pose of the cube wearing whatever is equipped, for menus,
+    // cropped tight so the model stays centered in its frame with or without a pack
+    static func playerImage(equipped: Set<Powerup>) -> UIImage {
+        let spriteW: CGFloat = 44, spriteH = spriteW * 600 / 512
+        let wingW = spriteW * 1.5, wingH = wingW * 600 / 700
+        let wings = equipped.contains(.doubleJump)
+        let jet = equipped.contains(.jetpack)
+        let combined = wings && jet
+        let hasPack = wings || jet
+        let packTop = spriteH * 0.62 + wingH / 2        // how far a pack reaches above the feet
+        let topAbove = max(spriteH, hasPack ? packTop : 0)
+        let canvas = CGSize(width: hasPack ? wingW : spriteW, height: topAbove + 2)
+        let feetX = canvas.width / 2, feetY = canvas.height - 2
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false; fmt.scale = 3
+        return UIGraphicsImageRenderer(size: canvas, format: fmt).image { _ in
+            func body(_ name: String) {
+                UIImage(named: name)?.draw(in: CGRect(x: feetX - spriteW / 2, y: feetY - spriteH,
+                                                      width: spriteW, height: spriteH))
+            }
+            func pack(_ name: String) {
+                let cy = feetY - spriteH * 0.62
+                UIImage(named: name)?.draw(in: CGRect(x: feetX - wingW / 2, y: cy - wingH / 2,
+                                                      width: wingW, height: wingH))
+            }
+            if wings {
+                pack(combined ? "cube.wing.jetpack.left" : "cube.wing.left")
+                pack(combined ? "cube.wing.jetpack.right" : "cube.wing.right")
+            }
+            if jet { pack(combined ? "cube.jetpack.wings" : "cube.jetpack") }
+            body("cube.sitting")
+            let dash = equipped.contains(.dash), spike = equipped.contains(.spikeBoots)
+            body((dash && spike) ? "cube.boots.both"
+                 : spike ? "cube.boots.spike" : dash ? "cube.boots.dash" : "cube.shoes")
+            body("cube.eyes")
+            body("cube.mouth.neutral")
         }
     }
 

@@ -1022,6 +1022,8 @@ struct LevelPlaytestView: View {
     @State private var dashReady = true
     @State private var jetpackFuel: CGFloat = 1
     @State private var heldDirection: CGFloat = 0
+    @State private var equippedSlots: [String?] = [nil, nil]
+    @State private var showInventory = false
     @ObservedObject private var settings = GameSettings.shared
 
     init(level: LevelData, onExit: @escaping () -> Void) {
@@ -1031,11 +1033,17 @@ struct LevelPlaytestView: View {
         let s = LevelScene(size: UIScreen.main.bounds.size)
         s.customLevel = level
         s.bottomInset = GameTabBar.height
-        if level.powerups.contains(.doubleJump) { s.extraJumps = 1 }
-        if level.powerups.contains(.dash) { s.hasDash = true }
-        if level.powerups.contains(.jetpack) { s.hasJetpack = true }
-        if level.powerups.contains(.spikeBoots) { s.hasSpikeBoots = true }
         _scene = State(initialValue: s)
+    }
+
+    private var equippedPowers: Set<Powerup> { InventoryItem.powers(of: equippedSlots) }
+
+    private func applyEquip() {
+        let p = equippedPowers
+        scene.extraJumps = p.contains(.doubleJump) ? 1 : 0
+        scene.hasDash = p.contains(.dash)
+        scene.hasJetpack = p.contains(.jetpack)
+        scene.hasSpikeBoots = p.contains(.spikeBoots)
     }
 
     // composed exactly like the game feed so the gate and bar line up identically
@@ -1050,17 +1058,38 @@ struct LevelPlaytestView: View {
             }
             .padding(.top, 54)
         }
+        .overlay {
+            if showInventory {
+                ZStack(alignment: .bottom) {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .overlay(Color.black.opacity(0.45))
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                                showInventory = false
+                            }
+                        }
+                    InventoryPanel(owned: level.powerups, slots: $equippedSlots, unlockedSlots: 2)
+                        .padding(.bottom, GameTabBar.height)
+                        .transition(.move(edge: .bottom))
+                }
+            }
+        }
+        .onChange(of: equippedSlots) { _ in applyEquip() }
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
-                       dashEnabled: level.powerups.contains(.dash), dashReady: dashReady,
-                       wingsEnabled: level.powerups.contains(.doubleJump),
+                       dashEnabled: equippedPowers.contains(.dash), dashReady: dashReady,
+                       wingsEnabled: equippedPowers.contains(.doubleJump),
                        jumpReady: jumpReady, airJumpReady: airJumpReady,
                        onMove: { scene.setMove($0) },
                        onJump: { scene.jump() },
                        onDash: { scene.dash() },
                        onJumpHold: { scene.setJumpHeld($0) },
-                       jetpackEnabled: level.powerups.contains(.jetpack),
-                       jetpackFuel: jetpackFuel)
+                       jetpackEnabled: equippedPowers.contains(.jetpack),
+                       jetpackFuel: jetpackFuel,
+                       showInventory: $showInventory)
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)

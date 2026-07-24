@@ -4,6 +4,8 @@ import SwiftUI
 struct SaveSlot: Codable {
     var level = 0
     var powerups: Set<Powerup> = []
+    // item ids sitting in the equip slots, optional so old saves still decode
+    var equipped: [String]? = nil
     // exact cube position and per level item state, nil means a fresh start
     var cubeX: Double?
     var cubeY: Double?
@@ -85,6 +87,8 @@ struct FeedView: View {
     @State private var menuLeft = false
     @State private var gateUnlocked = false
     @State private var runPowerups: Set<Powerup> = []
+    @State private var equippedSlots: [String?] = [nil, nil]
+    @State private var showInventory = false
     @State private var jumpReady = true
     @State private var airJumpReady = false
     @State private var dashReady = true
@@ -376,16 +380,29 @@ struct FeedView: View {
         }
     }
 
+    private var equippedPowers: Set<Powerup> { InventoryItem.powers(of: equippedSlots) }
+
+    // push the equipped loadout onto every scene, only equipped items take effect
+    private func applyEquip(to scenes: [LevelScene]) {
+        let p = equippedPowers
+        for s in scenes {
+            s.extraJumps = p.contains(.doubleJump) ? 1 : 0
+            s.hasDash = p.contains(.dash)
+            s.hasJetpack = p.contains(.jetpack)
+            s.hasSpikeBoots = p.contains(.spikeBoots)
+        }
+    }
+
     private func enterGame(_ slot: SaveSlot) {
         guard let scenes else { return }
         let level = min(max(slot.level, 0), Self.levelCount - 1)
         runPowerups = slot.powerups
-        for s in scenes {
-            s.extraJumps = slot.powerups.contains(.doubleJump) ? 1 : 0
-            s.hasDash = slot.powerups.contains(.dash)
-            s.hasJetpack = slot.powerups.contains(.jetpack)
-            s.hasSpikeBoots = slot.powerups.contains(.spikeBoots)
-        }
+        // restore the loadout, only keep items still owned
+        var loaded: [String?] = [nil, nil]
+        for (i, id) in (slot.equipped ?? []).prefix(2).enumerated()
+        where InventoryItem.powers(id).isSubset(of: slot.powerups) { loaded[i] = id }
+        equippedSlots = loaded
+        applyEquip(to: scenes)
 
         let hasPosition = slot.cubeX != nil && slot.cubeY != nil
         if hasPosition {
@@ -416,6 +433,7 @@ struct FeedView: View {
         guard let a = activeSlot, a < slots.count else { return }
         slots[a].level = currentLevel
         slots[a].powerups = runPowerups
+        slots[a].equipped = equippedSlots.compactMap { $0 }
         if let scene = scenes?[currentLevel] {
             let s = scene.snapshot()
             slots[a].cubeX = s.x
@@ -436,6 +454,8 @@ struct FeedView: View {
         activeSlot = nil
         heldDirection = 0
         runPowerups = []
+        equippedSlots = [nil, nil]
+        showInventory = false
         // reset only after the feed unmounts
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             scenes = nil
@@ -581,12 +601,15 @@ struct FeedView: View {
             }
             .padding(.top, 54)
         }
+        // the inventory sits under the bar overlay so the bar stays on top of it
+        .overlay { inventoryOverlay(scenes) }
+        .onChange(of: equippedSlots) { _ in applyEquip(to: scenes) }
         // outside the scroll so it never moves
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
-                       dashEnabled: runPowerups.contains(.dash),
+                       dashEnabled: equippedPowers.contains(.dash),
                        dashReady: dashReady,
-                       wingsEnabled: runPowerups.contains(.doubleJump),
+                       wingsEnabled: equippedPowers.contains(.doubleJump),
                        jumpReady: jumpReady,
                        airJumpReady: airJumpReady,
                        onMove: { dir in
@@ -602,8 +625,30 @@ struct FeedView: View {
                        onJumpHold: { held in
                            scenes[currentLevel].setJumpHeld(held)
                        },
-                       jetpackEnabled: runPowerups.contains(.jetpack),
-                       jetpackFuel: jetpackFuel)
+                       jetpackEnabled: equippedPowers.contains(.jetpack),
+                       jetpackFuel: jetpackFuel,
+                       showInventory: $showInventory)
+        }
+    }
+
+    // full screen frost with the panel resting just above the control bar
+    @ViewBuilder private func inventoryOverlay(_ scenes: [LevelScene]) -> some View {
+        if showInventory {
+            ZStack(alignment: .bottom) {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(Color.black.opacity(0.45))
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                            showInventory = false
+                        }
+                    }
+                InventoryPanel(owned: runPowerups, slots: $equippedSlots, unlockedSlots: 1)
+                    .padding(.bottom, GameTabBar.height)
+                    .transition(.move(edge: .bottom))
+            }
         }
     }
 

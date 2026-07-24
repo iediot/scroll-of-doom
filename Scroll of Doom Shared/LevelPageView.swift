@@ -176,6 +176,7 @@ struct GameTabBar: View {
     var onJumpHold: (Bool) -> Void = { _ in }
     var jetpackEnabled: Bool = false
     var jetpackFuel: CGFloat = 1
+    @Binding var showInventory: Bool
 
     private static let dimmed = Color(white: 0.45)
 
@@ -187,7 +188,7 @@ struct GameTabBar: View {
             HStack(spacing: 0) {
                 barHoldItem(rotation: .degrees(-90), direction: -1)
                 barHoldItem(rotation: .degrees(90), direction: 1)
-                createGate
+                inventoryButton
                 dashItem
                 jumpItem
             }
@@ -270,27 +271,206 @@ struct GameTabBar: View {
     }
 
 
-    private var createGate: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 9)
-                .fill(Color(white: 0.55))
-                .frame(width: 44, height: 31)
-                .offset(x: -5)
-            RoundedRectangle(cornerRadius: 9)
-                .fill(Color(white: 0.3))
-                .frame(width: 44, height: 31)
-                .offset(x: 5)
-            RoundedRectangle(cornerRadius: 9)
-                .fill(.white)
-                .frame(width: 44, height: 31)
-            // cross spins into the plus on unlock
-            Image(systemName: "plus")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.black)
-                .rotationEffect(.degrees(gateUnlocked ? 0 : 45))
-                .animation(.spring(response: 0.35, dampingFraction: 0.55), value: gateUnlocked)
+    // opens the inventory that slides up from below
+    private var inventoryButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                showInventory.toggle()
+            }
+        } label: {
+            Image(systemName: "backpack.fill")
+                .font(.system(size: 27, weight: .medium))
+                .foregroundStyle(showInventory ? .white : Color(white: 0.72))
         }
+        .buttonStyle(.plain)
         .frame(maxWidth: .infinity, minHeight: 62)
+    }
+}
+
+// every inventory item maps to the powerups it grants, a combined item counts as both
+enum InventoryItem {
+    static func powers(_ id: String) -> Set<Powerup> {
+        switch id {
+        case "cube.wings": return [.doubleJump]
+        case "cube.jetpack": return [.jetpack]
+        case "item.dashBoots": return [.dash]
+        case "item.spikeBoots": return [.spikeBoots]
+        case "item.bothBoots": return [.dash, .spikeBoots]
+        case "cube.jetpack.wings": return [.doubleJump, .jetpack]
+        default: return []
+        }
+    }
+    // the owned items for a powerup set, a combined item replaces the two it is made of
+    static func owned(from s: Set<Powerup>) -> [String] {
+        let wings = s.contains(.doubleJump), jet = s.contains(.jetpack)
+        let dash = s.contains(.dash), spike = s.contains(.spikeBoots)
+        var out: [String] = []
+        if wings && jet { out.append("cube.jetpack.wings") }
+        else { if wings { out.append("cube.wings") }; if jet { out.append("cube.jetpack") } }
+        if dash && spike { out.append("item.bothBoots") }
+        else { if dash { out.append("item.dashBoots") }; if spike { out.append("item.spikeBoots") } }
+        return out
+    }
+    static func powers(of slots: [String?]) -> Set<Powerup> {
+        slots.compactMap { $0 }.reduce(into: Set<Powerup>()) { $0.formUnion(powers($1)) }
+    }
+}
+
+private struct SlotFrameKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue()) { _, b in b }
+    }
+}
+private struct PoolFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let n = nextValue(); if n != .zero { value = n }
+    }
+}
+
+// the pop up inventory, spans the screen and rises from the control bar,
+// items are dragged into the slots to equip them and back out to remove them
+struct InventoryPanel: View {
+    static let height: CGFloat = 300
+    private static let space = "inventory"
+    var owned: Set<Powerup> = []
+    @Binding var slots: [String?]
+    var unlockedSlots: Int = 1
+
+    @State private var dragItem: String?
+    @State private var dragPos: CGPoint = .zero
+    @State private var slotFrames: [Int: CGRect] = [:]
+    @State private var poolFrame: CGRect = .zero
+
+    private var equipped: Set<Powerup> { InventoryItem.powers(of: slots) }
+    // owned items not currently sitting in a slot
+    private var pool: [String] { InventoryItem.owned(from: owned).filter { !slots.contains($0) } }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Image(systemName: "backpack.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                Text("Inventory")
+                    .font(.system(size: 18, weight: .bold))
+                Spacer()
+                HStack(spacing: 6) {
+                    Image(uiImage: GameArt.coinStillImage())
+                        .resizable().scaledToFit()
+                        .frame(width: 22, height: 22)
+                    Text("\(CoinBank.balance)")
+                        .font(.system(size: 18, weight: .bold))
+                }
+            }
+            .foregroundStyle(.white)
+
+            // two square slots hugging a big centered render of the equipped model
+            HStack(spacing: 20) {
+                slotView(0)
+                Image(uiImage: GameArt.playerImage(equipped: equipped))
+                    .resizable().scaledToFit()
+                    .frame(height: 120)
+                slotView(1)
+            }
+
+            // the pool of owned items, drag one out here to unequip it
+            HStack(spacing: 12) {
+                ForEach(pool, id: \.self) { id in
+                    itemTile(id)
+                        .opacity(dragItem == id ? 0.3 : 1)
+                        .highPriorityGesture(dragGesture(id))
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 62)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: PoolFrameKey.self,
+                                       value: g.frame(in: .named(Self.space)))
+            })
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 26)
+        .padding(.top, 16)
+        .frame(height: Self.height)
+        .frame(maxWidth: .infinity)
+        .background(Color(white: 0.15))
+        .clipShape(.rect(topLeadingRadius: 22, topTrailingRadius: 22))
+        .coordinateSpace(name: Self.space)
+        .onPreferenceChange(SlotFrameKey.self) { slotFrames = $0 }
+        .onPreferenceChange(PoolFrameKey.self) { poolFrame = $0 }
+        // the item follows the finger while dragging
+        .overlay {
+            if let dragItem {
+                Image(dragItem).resizable().scaledToFit()
+                    .frame(width: 54, height: 54)
+                    .position(dragPos)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func dragGesture(_ id: String) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
+            .onChanged { v in dragItem = id; dragPos = v.location }
+            .onEnded { v in
+                drop(id, at: v.location)
+                dragItem = nil
+            }
+    }
+
+    private func drop(_ id: String, at p: CGPoint) {
+        for i in slots.indices where i < unlockedSlots {
+            if let f = slotFrames[i], f.contains(p) { equip(id, into: i); return }
+        }
+        if poolFrame.contains(p) { unequip(id) }
+    }
+
+    private func equip(_ id: String, into i: Int) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if let j = slots.firstIndex(of: id) { slots[j] = nil }
+            if i < slots.count { slots[i] = id }
+        }
+    }
+    private func unequip(_ id: String) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if let j = slots.firstIndex(of: id) { slots[j] = nil }
+        }
+    }
+
+    private func itemTile(_ name: String) -> some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(Color(white: 0.10))
+            .frame(width: 54, height: 54)
+            .overlay(Image(name).resizable().scaledToFit().padding(8))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.28), lineWidth: 1.5))
+    }
+
+    private func slotView(_ i: Int) -> some View {
+        let unlocked = i < unlockedSlots
+        let id = i < slots.count ? slots[i] : nil
+        return RoundedRectangle(cornerRadius: 14)
+            .fill(Color(white: 0.10))
+            .frame(width: 62, height: 62)
+            .overlay {
+                if let id {
+                    Image(id).resizable().scaledToFit().padding(8)
+                        .opacity(dragItem == id ? 0.3 : 1)
+                        .highPriorityGesture(dragGesture(id))
+                } else if unlocked {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color(white: 0.35), lineWidth: 2)
+                } else {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color(white: 0.2), style: StrokeStyle(lineWidth: 2, dash: [5]))
+                        .overlay(Image(systemName: "lock.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color(white: 0.32)))
+                }
+            }
+            .background(GeometryReader { g in
+                Color.clear.preference(key: SlotFrameKey.self,
+                                       value: [i: g.frame(in: .named(Self.space))])
+            })
     }
 }
 
