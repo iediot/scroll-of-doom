@@ -48,15 +48,15 @@ extension View {
 // a gentle top down progressive blur, several light bands each reaching lower and
 // fading out, so its blurriest at the top and eases to nothing at the bottom
 struct ProgressiveHeaderBlur: View {
-    var layers = 8
-    var perLayer: CGFloat = 0.05
+    var layers = 2   // fewer live blur views so transitions stay smooth
+    var perLayer: CGFloat = 0.16
     var body: some View {
         ZStack {
             ForEach(0..<layers, id: \.self) { i in
                 let end = CGFloat(i + 1) / CGFloat(layers)
                 // longer overlapping fades so neighbouring bands blend, keeping the
                 // blur close between adjacent steps instead of jumping
-                let hold = max(0, end - 2.5 / CGFloat(layers))
+                let hold = max(0, end - 2.0 / CGFloat(layers))
                 LightBlur(intensity: perLayer)
                     .mask(LinearGradient(stops: [
                         .init(color: .black, location: 0),
@@ -72,7 +72,8 @@ struct ProgressiveHeaderBlur: View {
 extension Color { static let gameBG = Color(white: 0.10) }
 extension UIColor { static let gameBG = UIColor(white: 0.10, alpha: 1) }
 
-// flip to true to show the on screen fps / node / draw overlay while debugging
+// flip to true to show the on screen fps / node / draw overlay while debugging,
+// the overlay itself costs a few fps so keep it off normally
 enum PerfHUD { static let on = false }
 
 // MARK: - Settings
@@ -86,46 +87,73 @@ final class GameSettings: ObservableObject {
     @Published var graphics: Int  { didSet { d.set(graphics, forKey: "set.graphics") } }   // 0 low, 1 med, 2 high
     @Published var particles: Int { didSet { d.set(particles, forKey: "set.particles") } }  // 0 off, 1 low, 2 med, 3 high
 
+    // only clean divisors of a 120hz display, 90 stutters and 30 is too choppy to use
+    static let frameRates = [60, 120]
+
     private init() {
         d.register(defaults: ["set.framerate": 120, "set.graphics": 2, "set.particles": 3])
         framerate = d.integer(forKey: "set.framerate")
         graphics = d.integer(forKey: "set.graphics")
         particles = d.integer(forKey: "set.particles")
+        // drop any stale, non divisor value like the old 90 option
+        if !Self.frameRates.contains(framerate) { framerate = 120 }
     }
 
-    // how many pixels to render, lower graphics renders the scene smaller and scales up
-    var renderScale: CGFloat { [0.6, 0.8, 1.0][min(max(graphics, 0), 2)] }
+    // fraction of the native resolution to render at, low is noticeably softer
+    var renderScale: CGFloat { [0.5, 0.7, 1.0][min(max(graphics, 0), 2)] }
     // scales every particle burst, off drops them entirely
-    var particleFactor: CGFloat { [0, 0.4, 0.7, 1.0][min(max(particles, 0), 3)] }
+    var particleFactor: CGFloat { [0, 0.3, 0.65, 1.0][min(max(particles, 0), 3)] }
+    // heavy extras (wallpaper, soft shadows) only on high
+    var richVisuals: Bool { graphics >= 2 }
 }
 
-// wraps an SKView so we can drop the render resolution and set the framerate live
+// an skview that keeps its reduced drawable resolution and frame rate cap, skview
+// resets both on layout so we reapply them there
+final class ScaledSKView: SKView {
+    var renderScale: CGFloat = 1
+    var targetFPS: Int = 120
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if preferredFramesPerSecond != targetFPS { preferredFramesPerSecond = targetFPS }
+        let native = window?.screen.nativeScale ?? UIScreen.main.scale
+        let target = max(1, native * renderScale)
+        if abs(contentScaleFactor - target) > 0.01 {
+            contentScaleFactor = target
+            layer.contentsScale = target
+        }
+    }
+}
+
+// wraps the skview so we can drop the render resolution and set the framerate live
 struct GameSpriteView: UIViewRepresentable {
     let scene: SKScene
     var renderScale: CGFloat = 1
     var framerate: Int = 120
     var paused: Bool = false   // stop rendering entirely, eg while hidden behind a menu
 
-    func makeUIView(context: Context) -> SKView {
-        let v = SKView()
+    func makeUIView(context: Context) -> ScaledSKView {
+        let v = ScaledSKView()
         v.ignoresSiblingOrder = true
+        v.renderScale = renderScale
+        v.targetFPS = framerate
         v.presentScene(scene)
         apply(v)
         return v
     }
 
-    func updateUIView(_ v: SKView, context: Context) {
+    func updateUIView(_ v: ScaledSKView, context: Context) {
         if v.scene !== scene { v.presentScene(scene) }
+        if v.renderScale != renderScale || v.targetFPS != framerate {
+            v.renderScale = renderScale
+            v.targetFPS = framerate
+            v.setNeedsLayout()   // reapply the drawable scale and fps cap
+        }
         apply(v)
     }
 
-    private func apply(_ v: SKView) {
+    private func apply(_ v: ScaledSKView) {
         v.preferredFramesPerSecond = framerate
         v.isPaused = paused
-        let native = v.window?.screen.nativeScale ?? UIScreen.main.scale
-        // fewer pixels drawn then scaled up, a real fill rate saving
-        v.contentScaleFactor = max(1, native * renderScale)
-        v.layer.contentsScale = v.contentScaleFactor
         v.showsFPS = PerfHUD.on
         v.showsNodeCount = PerfHUD.on
         v.showsDrawCount = PerfHUD.on
@@ -145,6 +173,9 @@ struct GameTabBar: View {
     let onMove: (CGFloat) -> Void
     let onJump: () -> Void
     let onDash: () -> Void
+    var onJumpHold: (Bool) -> Void = { _ in }
+    var jetpackEnabled: Bool = false
+    var jetpackFuel: CGFloat = 1
 
     private static let dimmed = Color(white: 0.45)
 
@@ -202,15 +233,34 @@ struct GameTabBar: View {
 
     // stacked triangles show jump charges, back one is the double jump
     private var jumpItem: some View {
-        PressableItem(onPress: { down in if down { onJump() } }) {
+        PressableItem(onPress: { down in if down { onJump() }; onJumpHold(down) }) {
             ZStack {
-                RoundedTriangle(cornerRadius: 5)
-                    .fill(wingsEnabled && airJumpReady ? Color.white : Self.dimmed)
-                    .frame(width: 25, height: 25)
-                    .offset(y: -7)
-                RoundedTriangle(cornerRadius: 5)
-                    .fill(Color.gameBG)
-                    .frame(width: 25, height: 25)
+                // jetpack fuel gauge behind the arrows, the fill drops revealing a
+                // darker track as fuel is spent, like the volume slider
+                if jetpackEnabled {
+                    ZStack(alignment: .bottom) {
+                        Rectangle().fill(Color(white: 0.18))
+                        Rectangle().fill(Color(white: 0.32))
+                            .frame(height: 44 * max(0, min(1, jetpackFuel)))
+                    }
+                    .frame(width: 40, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .animation(.linear(duration: 0.08), value: jetpackFuel)
+                }
+                // back arrow with the notch carved out of it, showing the gauge or
+                // background through the gap
+                ZStack {
+                    RoundedTriangle(cornerRadius: 5)
+                        .fill(wingsEnabled && airJumpReady ? Color.white : Self.dimmed)
+                        .frame(width: 25, height: 25)
+                        .offset(y: -7)
+                    RoundedTriangle(cornerRadius: 5)
+                        .fill(.black)
+                        .frame(width: 25, height: 25)
+                        .blendMode(.destinationOut)
+                }
+                .compositingGroup()
+                // front arrow renders fully on top
                 RoundedTriangle(cornerRadius: 5)
                     .fill(jumpReady ? Color.white : Self.dimmed)
                     .frame(width: 25, height: 25)
@@ -384,6 +434,8 @@ struct LevelPageView: View {
         switch adPowerup {
         case .doubleJump: return "@wingscorp.official"
         case .dash: return "@dashlabs.official"
+        case .jetpack: return "@jetlife.official"
+        case .spikeBoots: return "@gripwear.official"
         case nil: break
         }
         if isBoss { return "@boss\(displayLevel)" }
@@ -399,6 +451,8 @@ struct LevelPageView: View {
         switch adPowerup {
         case .doubleJump: return "Wings™ — fly through levels. Get yours today 🪽"
         case .dash: return "Dash™ — get there faster. Try it now 💨"
+        case .jetpack: return "JetLife™ — take to the skies. Fuel sold separately 🔥"
+        case .spikeBoots: return "GripWear™ — stick to any wall. Kick off in style 👟"
         case nil: break
         }
         if isBoss { return "you werent supposed to scroll this far." }

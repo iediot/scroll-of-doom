@@ -186,7 +186,9 @@ struct MyLevelsView: View {
         } label: {
             Color(white: 0.09)
                 .aspectRatio(1, contentMode: .fill)
-                .overlay(LevelPreview(level: level).opacity(selecting && !isSel ? 0.5 : 1))
+                // flatten each preview into one texture so the grid is cheap to composite
+                // and blur during the open and close transitions
+                .overlay(LevelPreview(level: level).drawingGroup().opacity(selecting && !isSel ? 0.5 : 1))
                 .clipShape(RoundedRectangle(cornerRadius: 3))
                 .overlay(alignment: .bottomLeading) {
                     Text(level.name).font(.system(size: 11, weight: .bold))
@@ -275,6 +277,13 @@ private struct LevelPreview: View {
                     .frame(width: g.size.width, height: g.size.height, alignment: .leading)
                 Canvas { ctx, _ in draw(ctx, f) }
 
+                // coins
+                ForEach(level.coins) { coin in
+                    Image(uiImage: GameArt.coinStillImage()).resizable().scaledToFit()
+                        .frame(width: hp, height: hp)
+                        .position(point(CGFloat(coin.x) * ref.width, CGFloat(coin.y) * ref.height, f))
+                }
+
                 // the placed heart key
                 Image("cube.heart").resizable().scaledToFit().frame(width: hp * 1.3, height: hp * 1.3)
                     .position(point(CGFloat(level.heartX) * ref.width, CGFloat(level.heartY) * ref.height, f))
@@ -326,8 +335,9 @@ private struct LevelPreview: View {
         gate.addLine(to: CGPoint(x: br.x, y: br.y))
         bar(gate, cap: .butt)
 
-        // platforms, walls and spikes
-        for p in level.platforms {
+        // spikes first so the platform bars draw over their bases
+        let ordered = level.platforms.filter { $0.isSpike } + level.platforms.filter { !$0.isSpike }
+        for p in ordered {
             let cx = CGFloat(p.x) * ref.width + CGFloat(p.offX)
             let cy = CGFloat(p.y) * ref.height + CGFloat(p.offY)
             let len = CGFloat(p.w) * ref.width
@@ -339,12 +349,13 @@ private struct LevelPreview: View {
                 return point(cx + dx * cos(rad) + dy * sin(rad), cy - dx * sin(rad) + dy * cos(rad), f)
             }
             if p.isSpike {
-                let bb = len * LevelScene.spikeScale
+                let bb = max(len - LevelScene.spikeRimInset, len * 0.4)
                 let hh = bb * LevelScene.spikeHeightRatio
+                let baseY = cy - len / 2 + LevelScene.spikeGroundLift   // base lifted onto the platform
                 var tri = Path()
-                tri.move(to: spin(cx - bb / 2, cy - hh / 2))
-                tri.addLine(to: spin(cx, cy + hh / 2))
-                tri.addLine(to: spin(cx + bb / 2, cy - hh / 2))
+                tri.move(to: spin(cx - bb / 2, baseY))
+                tri.addLine(to: spin(cx, baseY + hh))
+                tri.addLine(to: spin(cx + bb / 2, baseY))
                 tri.closeSubpath()
                 // black rim, grayer fill, gray edge, same as the bars
                 ctx.stroke(tri, with: .color(.black), style: StrokeStyle(lineWidth: rim, lineJoin: .round))
@@ -372,6 +383,8 @@ struct LevelEditorView: View {
     var onExit: () -> Void
 
     @State private var selected: UUID?
+    @State private var selectedCoin: UUID?
+    @State private var draggingNewCoin: UUID?
     @State private var heartSelected = false
     @State private var multiMode = false
     @State private var multiSelected: Set<UUID> = []
@@ -421,7 +434,7 @@ struct LevelEditorView: View {
                     gridOverlay(w: w, h: h)
 
                     Color.clear.contentShape(Rectangle())
-                        .onTapGesture { selected = nil; heartSelected = false; multiSelected = [] }
+                        .onTapGesture { selected = nil; heartSelected = false; multiSelected = []; selectedCoin = nil }
                         .gesture(DragGesture(coordinateSpace: .named("screen"))
                             .onChanged { v in
                                 guard zoom > 1 else { return }
@@ -431,6 +444,7 @@ struct LevelEditorView: View {
                             .onEnded { _ in panBase = pan })
 
                     ForEach($level.platforms) { $p in platformView($p, w: w, h: h) }
+                    ForEach($level.coins) { $c in coinView($c, w: w, h: h) }
 
                     if heartPlaced || draggingHeart { heartView(w: w, h: h) }
                 }
@@ -597,12 +611,7 @@ struct LevelEditorView: View {
                 set: { if $0 { level.powerups.insert(p) } else { level.powerups.remove(p) } })
     }
 
-    private func powerupName(_ p: Powerup) -> String {
-        switch p {
-        case .doubleJump: return "Double Jump"
-        case .dash: return "Dash"
-        }
-    }
+    private func powerupName(_ p: Powerup) -> String { p.title }
 
     private var topBar: some View {
         VStack {
@@ -618,6 +627,11 @@ struct LevelEditorView: View {
                     barButton("slider.horizontal.3") { showProps = true }
                     barButton("plus.square.on.square") { duplicateSelected() }
                     barButton("trash", tint: .red) { deleteSelected() }
+                } else if selectedCoin != nil {
+                    barButton("trash", tint: .red) {
+                        level.coins.removeAll { $0.id == selectedCoin }
+                        selectedCoin = nil
+                    }
                 }
                 barButton(multiMode ? "checkmark.circle.fill" : "checkmark.circle",
                           tint: multiMode ? .yellow : .white) {
@@ -648,10 +662,11 @@ struct LevelEditorView: View {
             Spacer()
             VStack(spacing: 0) {
                 Rectangle().fill(.white.opacity(0.15)).frame(height: 0.5)
-                HStack(spacing: 28) {
+                HStack(spacing: 22) {
                     platformPaletteItem(vertical: false, w: w, h: h)
                     platformPaletteItem(vertical: true, w: w, h: h)
                     platformPaletteItem(spike: true, w: w, h: h)
+                    coinPaletteItem(w: w, h: h)
 
                     Image("cube.heart").resizable().scaledToFit().frame(width: 30, height: 30)
                         .opacity(heartPlaced ? 0.3 : 1)
@@ -672,6 +687,26 @@ struct LevelEditorView: View {
             .frame(height: GameRef.barHeight)
             .background(Color.gameBG)
         }
+    }
+
+    // drag out coins from the palette, each drop is a new coin
+    private func coinPaletteItem(w: CGFloat, h: CGFloat) -> some View {
+        Image(uiImage: GameArt.coinStillImage()).resizable().scaledToFit().frame(width: 26, height: 26)
+            .frame(width: 44, height: 46).contentShape(Rectangle())
+            .gesture(DragGesture(coordinateSpace: .named("screen"))
+                .onChanged { v in
+                    let s = snap(toCanvas(v.location, w, h), w: w, h: h)
+                    if let id = draggingNewCoin, let i = level.coins.firstIndex(where: { $0.id == id }) {
+                        level.coins[i].x = fx(s.x, w)
+                        level.coins[i].y = fy(s.y, h)
+                    } else {
+                        let coin = CoinData(x: fx(s.x, w), y: fy(s.y, h))
+                        level.coins.append(coin)
+                        draggingNewCoin = coin.id
+                        selectedCoin = coin.id; selected = nil; heartSelected = false
+                    }
+                }
+                .onEnded { _ in draggingNewCoin = nil })
     }
 
     // a draggable icon in the palette, a horizontal bar, a wall, or a spike
@@ -724,11 +759,12 @@ struct LevelEditorView: View {
         let len = CGFloat(p.wrappedValue.w) * w
         let vert = p.wrappedValue.isVertical
         let spike = p.wrappedValue.isSpike
-        let spikeBase = len * LevelScene.spikeScale
+        let spikeBase = max(len - LevelScene.spikeRimInset, len * 0.4)
         let spikeH = spikeBase * LevelScene.spikeHeightRatio
-        return ZStack {
+        return Group {
             if spike {
-                // black rim then grayer fill, same rim widths as the bars
+                // black rim then grayer fill, sat at the bottom of its cell so it rotates
+                // about the cell center, a tight triangle hit shape
                 ZStack {
                     SpikeShape().fill(.black)
                         .overlay(SpikeShape().stroke(.black, style: StrokeStyle(lineWidth: 5.5, lineJoin: .round)))
@@ -737,18 +773,23 @@ struct LevelEditorView: View {
                                                      style: StrokeStyle(lineWidth: 3.3, lineJoin: .round)))
                 }
                 .frame(width: spikeBase, height: spikeH)
+                .padding(.bottom, LevelScene.spikeGroundLift)   // sit on the platform, not sunk in
+                .frame(width: len, height: len, alignment: .bottom)
+                .contentShape(Rectangle())   // whole cell grabbable so it's easy to move
             } else {
                 // black rim all around, grayer bar on top, matching the game
-                Capsule().fill(.black)
-                    .frame(width: vert ? 5.5 : len + 2.2, height: vert ? len + 2.2 : 5.5)
-                Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
-                    .frame(width: vert ? 3.3 : len, height: vert ? len : 3.3)
+                ZStack {
+                    Capsule().fill(.black)
+                        .frame(width: vert ? 5.5 : len + 2.2, height: vert ? len + 2.2 : 5.5)
+                    Capsule().fill(isSel ? Color.yellow : Color(white: 0.8))
+                        .frame(width: vert ? 3.3 : len, height: vert ? len : 3.3)
+                }
+                .frame(width: vert ? 14 : len, height: vert ? len : 14)
+                .contentShape(Rectangle())
             }
         }
-            .frame(width: spike ? max(len, 44) : (vert ? 30 : max(len, 44)),
-                   height: spike ? max(spikeH, 44) : (vert ? max(len, 44) : 30))
             .rotationEffect(.degrees(p.wrappedValue.rotation))
-            .contentShape(Rectangle())
+            .zIndex(spike ? 0 : 1)   // platform outlines read over spike bases
             .position(x: cx, y: cy)
             .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("screen"))
                 .onChanged { v in
@@ -802,6 +843,29 @@ struct LevelEditorView: View {
         }
     }
 
+    private func coinView(_ c: Binding<CoinData>, w: CGFloat, h: CGFloat) -> some View {
+        let id = c.wrappedValue.id
+        let cx = CGFloat(c.wrappedValue.x) * w, cy = (1 - CGFloat(c.wrappedValue.y)) * h
+        return Image(uiImage: GameArt.coinStillImage()).resizable().scaledToFit()
+            .frame(width: 24, height: 24)
+            .overlay(Circle().stroke(.yellow, lineWidth: selectedCoin == id ? 2 : 0).padding(-2))
+            .frame(width: 40, height: 40).contentShape(Circle())
+            .position(x: cx, y: cy)
+            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("screen"))
+                .onChanged { v in
+                    if dragAnchor == nil {
+                        selectedCoin = id; selected = nil; heartSelected = false
+                        dragAnchor = CGPoint(x: cx, y: cy)
+                    }
+                    guard let a = dragAnchor else { return }
+                    let s = snap(CGPoint(x: a.x + v.translation.width / zoom, y: a.y + v.translation.height / zoom), w: w, h: h)
+                    c.wrappedValue.x = fx(s.x, w)
+                    c.wrappedValue.y = fy(s.y, h)
+                }
+                .onEnded { _ in dragAnchor = nil })
+            .onTapGesture { selectedCoin = id; selected = nil; heartSelected = false }
+    }
+
     private func heartView(w: CGFloat, h: CGFloat) -> some View {
         let cx = CGFloat(level.heartX) * w, cy = (1 - CGFloat(level.heartY)) * h
         return Image("cube.heart").resizable().scaledToFit().frame(width: 34, height: 34)
@@ -822,8 +886,16 @@ struct LevelEditorView: View {
     }
 
     // faint square grid the items snap to
+    // vertical phase so a grid line lands exactly on the gate instead of mid cell
+    private func gridPhaseY(_ w: CGFloat, _ h: CGFloat) -> CGFloat {
+        let cell = w / gridCols
+        let barY = h - GameRef.barHeight
+        return barY.truncatingRemainder(dividingBy: cell)
+    }
+
     private func gridOverlay(w: CGFloat, h: CGFloat) -> some View {
         let cell = w / gridCols
+        let py = gridPhaseY(w, h)
         return Canvas { ctx, size in
             var x: CGFloat = 0
             while x <= size.width {
@@ -831,7 +903,7 @@ struct LevelEditorView: View {
                            with: .color(.white.opacity(0.14)), lineWidth: 0.5)
                 x += cell
             }
-            var y: CGFloat = 0
+            var y: CGFloat = py
             while y <= size.height {
                 ctx.stroke(Path { $0.move(to: CGPoint(x: 0, y: y)); $0.addLine(to: CGPoint(x: size.width, y: y)) },
                            with: .color(.white.opacity(0.14)), lineWidth: 0.5)
@@ -841,32 +913,39 @@ struct LevelEditorView: View {
         .allowsHitTesting(false)
     }
 
-    // snap a screen point to the nearest grid intersection
+    // snap a screen point to the nearest grid intersection, the y grid anchored to the gate
     private func snap(_ p: CGPoint, w: CGFloat, h: CGFloat) -> CGPoint {
         let cell = w / gridCols
-        return CGPoint(x: (p.x / cell).rounded() * cell, y: (p.y / cell).rounded() * cell)
+        let py = gridPhaseY(w, h)
+        return CGPoint(x: (p.x / cell).rounded() * cell,
+                       y: ((p.y - py) / cell).rounded() * cell + py)
     }
 
     // snap a bar so its near end lands on a grid line, along its long axis, and its
-    // thin axis sits on a line too, length is in cells and can be a half
+    // thin axis sits on a line too, length is in cells and can be a half. the x grid
+    // starts at the left edge, the y grid at the gate line
     private func snapPlatform(_ center: CGPoint, w: CGFloat, lengthCells: CGFloat,
                               vertical: Bool, spike: Bool = false) -> CGPoint {
         let cell = w / gridCols
+        let py = canvasSize.height > 0 ? gridPhaseY(w, canvasSize.height) : 0
         let half = lengthCells * cell / 2
-        func line(_ c: CGFloat) -> CGFloat { (c / cell).rounded() * cell }
-        func cellCenter(_ c: CGFloat) -> CGFloat { ((c / cell - 0.5).rounded() + 0.5) * cell }
+        func line(_ c: CGFloat, _ ph: CGFloat) -> CGFloat { ((c - ph) / cell).rounded() * cell + ph }
         // either edge may land on a grid line, whichever the drag is nearer to, so a
         // half length bar can start on a block or end on one
-        func edge(_ c: CGFloat) -> CGFloat {
-            let near = ((c - half) / cell).rounded() * cell + half
-            let far = ((c + half) / cell).rounded() * cell - half
+        func edge(_ c: CGFloat, _ ph: CGFloat) -> CGFloat {
+            let near = ((c - half - ph) / cell).rounded() * cell + half + ph
+            let far = ((c + half - ph) / cell).rounded() * cell - half + ph
             return abs(near - c) <= abs(far - c) ? near : far
         }
-        // spikes edge snap sideways like a bar, so halves place in half a cell and a
-        // whole one centers, and sit centered inside a cell vertically
-        if spike { return CGPoint(x: edge(center.x), y: cellCenter(center.y)) }
-        return vertical ? CGPoint(x: line(center.x), y: edge(center.y))
-                        : CGPoint(x: edge(center.x), y: line(center.y))
+        if spike {
+            // the pivot is the cell center, size/2 above the base, so snapping the base
+            // to a grid line is the same for any rotation and keeps it in the same cell
+            let sizePts = lengthCells * cell
+            let baseLine = line(center.y + sizePts / 2, py)
+            return CGPoint(x: edge(center.x, 0), y: baseLine - sizePts / 2)
+        }
+        return vertical ? CGPoint(x: line(center.x, 0), y: edge(center.y, py))
+                        : CGPoint(x: edge(center.x, 0), y: line(center.y, py))
     }
 
     private func delete(_ id: UUID) {
@@ -941,6 +1020,7 @@ struct LevelPlaytestView: View {
     @State private var jumpReady = true
     @State private var airJumpReady = false
     @State private var dashReady = true
+    @State private var jetpackFuel: CGFloat = 1
     @State private var heldDirection: CGFloat = 0
     @ObservedObject private var settings = GameSettings.shared
 
@@ -953,6 +1033,8 @@ struct LevelPlaytestView: View {
         s.bottomInset = GameTabBar.height
         if level.powerups.contains(.doubleJump) { s.extraJumps = 1 }
         if level.powerups.contains(.dash) { s.hasDash = true }
+        if level.powerups.contains(.jetpack) { s.hasJetpack = true }
+        if level.powerups.contains(.spikeBoots) { s.hasSpikeBoots = true }
         _scene = State(initialValue: s)
     }
 
@@ -975,7 +1057,10 @@ struct LevelPlaytestView: View {
                        jumpReady: jumpReady, airJumpReady: airJumpReady,
                        onMove: { scene.setMove($0) },
                        onJump: { scene.jump() },
-                       onDash: { scene.dash() })
+                       onDash: { scene.dash() },
+                       onJumpHold: { scene.setJumpHeld($0) },
+                       jetpackEnabled: level.powerups.contains(.jetpack),
+                       jetpackFuel: jetpackFuel)
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
@@ -983,6 +1068,7 @@ struct LevelPlaytestView: View {
             scene.onHatchOpened = { gateUnlocked = true }
             scene.onJumpStateChanged = { jumpReady = $0; airJumpReady = $1 }
             scene.onDashStateChanged = { dashReady = $0 }
+            scene.onJetpackFuel = { jetpackFuel = $0 }
             // beating the level just restarts it for testing
             scene.onFellThrough = { _ in
                 gateUnlocked = false

@@ -5,6 +5,17 @@ import UIKit
 enum Powerup: String, Codable, CaseIterable {
     case doubleJump
     case dash
+    case jetpack
+    case spikeBoots
+
+    var title: String {
+        switch self {
+        case .doubleJump: return "Double Jump"
+        case .dash: return "Dash"
+        case .jetpack: return "Jetpack"
+        case .spikeBoots: return "Spike Boots"
+        }
+    }
 }
 
 // all placeholder art in one spot, swap for real textures later
@@ -43,6 +54,56 @@ enum GameArt {
         switch powerup {
         case .doubleJump: return wingsImage()
         case .dash: return dashImage()
+        case .jetpack: return symbolImage("flame.fill", pointSize: 26,
+                                          canvas: CGSize(width: 40, height: 40), color: .white)
+        case .spikeBoots: return symbolImage("shoeprints.fill", pointSize: 24,
+                                             canvas: CGSize(width: 44, height: 40), color: .white)
+        }
+    }
+
+    // the coin still frame used in the editor, outlined like the rest
+    static func coinStillImage() -> UIImage { coinFrame(1) }
+    static func coinTexture() -> SKTexture { SKTexture(image: coinStillImage()) }
+
+    // the full spin, six drawn frames then the same six mirrored, so it reads as a coin turning
+    static func coinSpinFrames() -> [SKTexture] {
+        let base = (1...6).map { coinFrame($0) }
+        var frames = base.map { SKTexture(image: $0) }
+        frames += base.reversed().map { SKTexture(image: mirrored($0)) }
+        return frames
+    }
+
+    private static func coinFrame(_ i: Int) -> UIImage {
+        outlined(UIImage(named: "cube.coin.\(i)") ?? UIImage(), thickness: 6, color: .black)
+    }
+
+    // rings a solid silhouette of the shape around itself so the outline hugs the art not the png box
+    private static func outlined(_ image: UIImage, thickness: CGFloat, color: UIColor) -> UIImage {
+        let pad = thickness
+        let size = CGSize(width: image.size.width + pad * 2, height: image.size.height + pad * 2)
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false; fmt.scale = image.scale
+        let rect = CGRect(x: pad, y: pad, width: image.size.width, height: image.size.height)
+        let silhouette = UIGraphicsImageRenderer(size: image.size, format: fmt).image { _ in
+            image.draw(at: .zero)
+            color.setFill()
+            UIRectFillUsingBlendMode(CGRect(origin: .zero, size: image.size), .sourceIn)
+        }
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            let steps = 16
+            for i in 0..<steps {
+                let a = CGFloat(i) / CGFloat(steps) * 2 * .pi
+                silhouette.draw(in: rect.offsetBy(dx: cos(a) * thickness, dy: sin(a) * thickness))
+            }
+            image.draw(in: rect)
+        }
+    }
+
+    private static func mirrored(_ image: UIImage) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false; fmt.scale = image.scale
+        return UIGraphicsImageRenderer(size: image.size, format: fmt).image { ctx in
+            ctx.cgContext.translateBy(x: image.size.width, y: 0)
+            ctx.cgContext.scaleBy(x: -1, y: 1)
+            image.draw(at: .zero)
         }
     }
 

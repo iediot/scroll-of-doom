@@ -20,6 +20,13 @@ struct PlatformData: Codable, Identifiable, Equatable {
     var rotation: Double { rot ?? 0 }
 }
 
+// a collectible coin, a point in the level, the run currency
+struct CoinData: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var x: Double   // center, fraction of width
+    var y: Double   // fraction of height from the bottom
+}
+
 struct LevelData: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String = "untitled"
@@ -27,6 +34,17 @@ struct LevelData: Codable, Identifiable, Equatable {
     var heartX: Double = 0.5
     var heartY: Double = 0.24
     var powerups: Set<Powerup> = []   // powerups granted to the player in this level
+    var coins: [CoinData] = []        // collectible coins placed in the level
+}
+
+// the players lifetime coin balance, spent later to unlock equip slots
+enum CoinBank {
+    private static let key = "coinBalance"
+    static var balance: Int {
+        get { UserDefaults.standard.integer(forKey: key) }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+    static func add(_ n: Int) { balance += n }
 }
 
 enum CustomLevelStore {
@@ -75,6 +93,7 @@ final class LevelScene: SKScene {
         static let wings:    UInt32 = 0x1 << 3
         static let platform: UInt32 = 0x1 << 4   // custom platforms and walls, phased through on entry
         static let spike:    UInt32 = 0x1 << 5   // deadly, resets the level to the drop in point
+        static let coin:     UInt32 = 0x1 << 6   // collectible currency
     }
 
     var levelIndex = 0
@@ -85,6 +104,8 @@ final class LevelScene: SKScene {
     var adPowerup: Powerup = .doubleJump
     var extraJumps = 0 { didSet { updateWings() } }
     var hasDash = false { didSet { updateShoes() } }
+    var hasJetpack = false { didSet { updateWings() } }
+    var hasSpikeBoots = false { didSet { updateShoes() } }
     // box floor sits on top of the tab bar
     var bottomInset: CGFloat = 0
     var onFellThrough: ((CGFloat) -> Void)?
@@ -95,6 +116,25 @@ final class LevelScene: SKScene {
     var onBossDelivered: (() -> Void)?
     var onJumpStateChanged: ((Bool, Bool) -> Void)?
     var onDashStateChanged: ((Bool) -> Void)?
+    var onCollectCoin: ((Int) -> Void)?   // reports the new run coin count
+    var onJetpackFuel: ((CGFloat) -> Void)?   // reports the fuel fraction, 0...1
+
+    // jetpack, accelerates upward while jump is held, refuels on the ground
+    private let jetpackMaxFuel: CGFloat = 0.4    // seconds of thrust, kept short
+    private let jetpackAccel: CGFloat = 9000     // upward acceleration while thrusting
+    private let jetpackMaxRise: CGFloat = 460    // cap on the rise speed it builds to
+    private var jetpackFuel: CGFloat = 0.4
+    private var jumpHeld = false
+    private var jetpackArmed = false   // a jump press after every jump is spent arms it
+    private var lastReportedFuel: CGFloat = 1
+    // spike boots, a brief decaying wall cling then a kick off
+    private let wallClingTime: TimeInterval = 1.0
+    private let wallKick: CGFloat = 0.8          // horizontal push away from the wall
+    private var wallContact: CGFloat = 0         // -1 wall on the left, 1 on the right, 0 none
+    private var wallClingUntil: TimeInterval = -1
+    private var wallJumpUntil: TimeInterval = -1  // holds the kick against movement input
+    private var wallJumpDir: CGFloat = 0
+    private var coinsCollected = 0
 
     private let modelSize: CGFloat = 33
     // small fixed hitbox, centered horizontally and sitting at the models feet
@@ -110,8 +150,11 @@ final class LevelScene: SKScene {
     private var barOutline: CGFloat { barWidth + 2 * barWidth / 3 }
     // spikes fit inside their grid footprint with a margin, a tall isosceles triangle
     // so its pointing direction reads clearly, hitbox a forgiving core
-    static let spikeScale: CGFloat = 0.8
-    static let spikeHeightRatio: CGFloat = 1.2
+    // the spike base is a cell minus the rim so the whole triangle including its outline
+    // fits one cell, adjacent spikes then tile with their rims meeting on the grid line
+    static let spikeRimInset: CGFloat = 5.5
+    static let spikeHeightRatio: CGFloat = 1.15
+    static let spikeGroundLift: CGFloat = 4   // sits on the platform rather than sunk into it
     static let spikeHitScale = CGSize(width: 0.32, height: 0.4)
 
     private var player: SKNode!
@@ -122,9 +165,10 @@ final class LevelScene: SKScene {
     private var eyesSprite: SKSpriteNode!   // eyes with baked in glare
     private var mouthSprite: SKSpriteNode!  // swaps between open, neutral, happy
     private var heldHeart: SKSpriteNode!    // shown above the head while carrying the key
-    private var shoesSprite: SKSpriteNode!  // shown at the feet once dash is unlocked
+    private var shoesSprite: SKSpriteNode!  // boots, dash / spike / both, shown at the feet
     private var leftWing: SKSpriteNode!     // the two wings flap with jumping and falling
     private var rightWing: SKSpriteNode!
+    private var jetpackSprite: SKSpriteNode!  // back mounted jetpack, no rotation
     private enum Pose { case ground, up, apex, down }
     private var pose: Pose = .ground
     private let apexBand: CGFloat = 90   // near zero vertical speed counts as the top
@@ -138,7 +182,7 @@ final class LevelScene: SKScene {
     private var hatchNode: SKNode?
     private var platformsNode: SKNode?
     private var platformSegments: [(a: CGPoint, b: CGPoint)] = []   // for the save thumbnail
-    private var spikeTriangles: [(c: CGPoint, base: CGFloat, height: CGFloat, rad: CGFloat)] = []
+    private var spikeTriangles: [(c: CGPoint, base: CGFloat, height: CGFloat, size: CGFloat, rad: CGFloat)] = []
     private var levelEntryFrac: CGFloat = 0.5   // where the cube first dropped in, for spike resets
     private var pendingDeath = false
     private var dying = false
@@ -277,8 +321,10 @@ final class LevelScene: SKScene {
             walkNode.addChild(n)
             return n
         }
-        leftWing = wing("cube.wing.left")
-        rightWing = wing("cube.wing.right")
+        leftWing = wing("cube.wing.left"); leftWing.zPosition = -2
+        rightWing = wing("cube.wing.right"); rightWing.zPosition = -2
+        jetpackSprite = wing("cube.jetpack")
+        jetpackSprite.zPosition = -1   // in front of the wings for the combined form
 
         bodySprite = layer("cube.sitting", 0)
         shoesSprite = layer("cube.shoes", 0.5)   // over the body, at the feet
@@ -301,8 +347,13 @@ final class LevelScene: SKScene {
         pose = .ground
         wasGrounded = false   // it drops in from the air
         setMouth(airborne: true)
+        jetpackFuel = jetpackMaxFuel
+        jetpackArmed = false
+        wallClingUntil = -1
+        coinsCollected = 0
 
         layoutBox()
+        addCoins()
         addHeartSlot()
         // a held or delivered item isnt rendered again
         let skip = restore?.skipPickup ?? false
@@ -323,9 +374,10 @@ final class LevelScene: SKScene {
         lastLayoutSize = size
     }
 
-    // square ruled paper behind everything, anchored to the left so the right
-    // side only appears when the screen is wider than tall
+    // square ruled paper behind everything, anchored to the left so the right side
+    // only appears when the screen is wider than tall, dropped on low graphics
     private func addWallpaper() {
+        guard GameSettings.shared.graphics >= 1 else { return }
         let side = max(size.width, size.height)
         let bg = SKSpriteNode(texture: SKTexture(imageNamed: "level.wallpaper"))
         bg.size = CGSize(width: side, height: side)
@@ -333,6 +385,26 @@ final class LevelScene: SKScene {
         bg.position = CGPoint(x: 0, y: size.height / 2)
         bg.zPosition = -100
         addChild(bg)
+    }
+
+    // the placed coins, each cycling through the drawn spin frames
+    private func addCoins() {
+        guard let c = customLevel else { return }
+        let frames = GameArt.coinSpinFrames()
+        for coin in c.coins {
+            let node = SKSpriteNode(texture: frames.first)
+            node.size = CGSize(width: 26, height: 26)
+            node.position = CGPoint(x: CGFloat(coin.x) * size.width, y: CGFloat(coin.y) * size.height)
+            node.zPosition = 8
+            let body = SKPhysicsBody(circleOfRadius: 16)
+            body.isDynamic = false
+            body.categoryBitMask = Cat.coin
+            body.collisionBitMask = 0
+            node.physicsBody = body
+            addChild(node)
+            node.run(.repeatForever(.animate(with: frames, timePerFrame: 0.07,
+                                             resize: false, restore: false)))
+        }
     }
 
     private func addHeartSlot() {
@@ -479,18 +551,20 @@ final class LevelScene: SKScene {
             return CGPoint(x: c.x + dx * cos(rad) + dy * sin(rad),
                            y: c.y - dx * sin(rad) + dy * cos(rad))
         }
-        // a triangle pointing up plus a small forgiving hitbox in its middle
+        // a triangle whose base sits at the bottom of its cell, rotated about the cell
+        // center so any angle stays in the same cell and flips symmetrically
         func addSpike(_ cx: CGFloat, _ cy: CGFloat, _ size: CGFloat, _ rad: CGFloat) {
-            let base = size * Self.spikeScale
+            let base = max(size - Self.spikeRimInset, size * 0.4)
             let h = base * Self.spikeHeightRatio
-            let c = CGPoint(x: cx, y: cy)
-            let apex = rot(CGPoint(x: cx, y: cy + h / 2), c, rad)
-            let bl = rot(CGPoint(x: cx - base / 2, y: cy - h / 2), c, rad)
-            let br = rot(CGPoint(x: cx + base / 2, y: cy - h / 2), c, rad)
+            let c = CGPoint(x: cx, y: cy)       // pivot, the cell center
+            let baseY = cy - size / 2 + Self.spikeGroundLift   // lifted to sit on the platform
+            let apex = rot(CGPoint(x: cx, y: baseY + h), c, rad)
+            let bl = rot(CGPoint(x: cx - base / 2, y: baseY), c, rad)
+            let br = rot(CGPoint(x: cx + base / 2, y: baseY), c, rad)
             spikePath.move(to: bl); spikePath.addLine(to: apex); spikePath.addLine(to: br); spikePath.closeSubpath()
-            spikeTriangles.append((c, base, h, rad))
+            spikeTriangles.append((c, base, h, size, rad))
             let hb = SKNode()
-            hb.position = c
+            hb.position = rot(CGPoint(x: cx, y: baseY + h / 2), c, rad)   // triangle center, rotated
             hb.zRotation = rad
             let body = SKPhysicsBody(rectangleOf: CGSize(width: base * Self.spikeHitScale.width,
                                                          height: h * Self.spikeHitScale.height))
@@ -549,15 +623,16 @@ final class LevelScene: SKScene {
         core.strokeColor = barColor; core.lineWidth = barWidth; core.lineCap = .round; core.zPosition = 1
         node.addChild(core)
 
-        // spikes, a black rim then a grayer fill, same widths as the bars
+        // spikes, a black rim then a grayer fill, sat behind the bars so a platform
+        // outline reads over the spike base when one is placed underneath
         if !spikePath.isEmpty {
             let spikeRim = SKShapeNode(path: spikePath)
             spikeRim.fillColor = .black; spikeRim.strokeColor = .black
-            spikeRim.lineWidth = barOutline; spikeRim.lineJoin = .round; spikeRim.zPosition = 0
+            spikeRim.lineWidth = barOutline; spikeRim.lineJoin = .round; spikeRim.zPosition = -2
             node.addChild(spikeRim)
             let spikeFill = SKShapeNode(path: spikePath)
             spikeFill.fillColor = barColor; spikeFill.strokeColor = barColor
-            spikeFill.lineWidth = barWidth; spikeFill.lineJoin = .round; spikeFill.zPosition = 1
+            spikeFill.lineWidth = barWidth; spikeFill.lineJoin = .round; spikeFill.zPosition = -1
             node.addChild(spikeFill)
         }
 
@@ -740,11 +815,7 @@ final class LevelScene: SKScene {
                 cg.move(to: a); cg.addLine(to: b); cg.strokePath()
             }
 
-            // platforms and walls
-            for seg in platformSegments {
-                drawBar(pt(seg.a), pt(seg.b))
-            }
-            // spikes, filled gray triangle with a black rim
+            // spikes first, filled gray triangle with a black rim, so the bars draw over
             func spinPt(_ p: CGPoint, _ c: CGPoint, _ rad: CGFloat) -> CGPoint {
                 if rad == 0 { return p }
                 let dx = p.x - c.x, dy = p.y - c.y
@@ -752,13 +823,18 @@ final class LevelScene: SKScene {
                                y: c.y - dx * sin(rad) + dy * cos(rad))
             }
             for s in spikeTriangles {
-                let apex = pt(spinPt(CGPoint(x: s.c.x, y: s.c.y + s.height / 2), s.c, s.rad))
-                let bl = pt(spinPt(CGPoint(x: s.c.x - s.base / 2, y: s.c.y - s.height / 2), s.c, s.rad))
-                let br = pt(spinPt(CGPoint(x: s.c.x + s.base / 2, y: s.c.y - s.height / 2), s.c, s.rad))
+                let baseY = s.c.y - s.size / 2 + LevelScene.spikeGroundLift
+                let apex = pt(spinPt(CGPoint(x: s.c.x, y: baseY + s.height), s.c, s.rad))
+                let bl = pt(spinPt(CGPoint(x: s.c.x - s.base / 2, y: baseY), s.c, s.rad))
+                let br = pt(spinPt(CGPoint(x: s.c.x + s.base / 2, y: baseY), s.c, s.rad))
                 cg.move(to: bl); cg.addLine(to: apex); cg.addLine(to: br); cg.closePath()
                 cg.setFillColor(barColor.cgColor); cg.fillPath()
                 cg.move(to: bl); cg.addLine(to: apex); cg.addLine(to: br); cg.closePath()
                 cg.setStrokeColor(UIColor.black.cgColor); cg.setLineWidth(barWidth * scale); cg.strokePath()
+            }
+            // platforms and walls, over the spikes
+            for seg in platformSegments {
+                drawBar(pt(seg.a), pt(seg.b))
             }
             // locked gate spans the floor
             if !hatchUnlocked {
@@ -833,9 +909,11 @@ final class LevelScene: SKScene {
         let seq = SKAction.sequence([back, .wait(forDuration: dashDuration), settle])
         leftWing?.run(seq, withKey: "look")
         rightWing?.run(seq, withKey: "look")
+        jetpackSprite?.run(seq, withKey: "look")
     }
 
-    // the face and shoes glance toward the direction of travel, the wings trail opposite
+    // the face and shoes glance toward the direction of travel, the wings and jetpack
+    // trail opposite, but the jetpack never rotates
     private func lookEyes(_ dir: CGFloat, amount: CGFloat = 2.6) {
         let x = dir * amount
         eyesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
@@ -843,12 +921,20 @@ final class LevelScene: SKScene {
         shoesSprite?.run(.moveTo(x: x, duration: 0.1), withKey: "look")
         leftWing?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
         rightWing?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
+        jetpackSprite?.run(.moveTo(x: -x * 3, duration: 0.1), withKey: "look")
     }
 
-    // wings only show once double jump is available
+    // wings show with double jump, the jetpack shows on its own, and combining the two
+    // swaps in the jetpack variants of the wings and the pack body
     private func updateWings() {
-        leftWing?.isHidden = extraJumps <= 0
-        rightWing?.isHidden = extraJumps <= 0
+        let hasWings = extraJumps > 0
+        let combined = hasWings && hasJetpack
+        leftWing?.isHidden = !hasWings
+        rightWing?.isHidden = !hasWings
+        leftWing?.texture = SKTexture(imageNamed: combined ? "cube.wing.jetpack.left" : "cube.wing.left")
+        rightWing?.texture = SKTexture(imageNamed: combined ? "cube.wing.jetpack.right" : "cube.wing.right")
+        jetpackSprite?.isHidden = !hasJetpack
+        jetpackSprite?.texture = SKTexture(imageNamed: combined ? "cube.jetpack.wings" : "cube.jetpack")
     }
 
     // body sprite and wing angles follow the vertical motion
@@ -878,6 +964,8 @@ final class LevelScene: SKScene {
         }
         poseWing(rightWing, rot: rightRot, y: baseY + dy)
         poseWing(leftWing, rot: leftRot, y: baseY + dy)
+        // the jetpack takes the same rise / drop but never rotates
+        jetpackSprite?.run(.moveTo(y: baseY + dy, duration: 0.12), withKey: "pose")
     }
 
     private func poseWing(_ wing: SKSpriteNode?, rot: CGFloat, y: CGFloat) {
@@ -897,9 +985,12 @@ final class LevelScene: SKScene {
         shoesSprite?.xScale = dir < 0 ? -1 : 1
     }
 
-    // shoes only show once dash is available
+    // boots show for dash or spike boots, the combined pair when both are held
     private func updateShoes() {
-        shoesSprite?.isHidden = !hasDash
+        shoesSprite?.isHidden = !(hasDash || hasSpikeBoots)
+        let name = (hasDash && hasSpikeBoots) ? "cube.boots.both"
+                 : hasSpikeBoots ? "cube.boots.spike" : "cube.boots.dash"
+        shoesSprite?.texture = SKTexture(imageNamed: name)
     }
 
     // true when the player is resting over a wall top, so its tip counts as jumpable
@@ -914,6 +1005,26 @@ final class LevelScene: SKScene {
             }
         }
         return false
+    }
+
+    // which side a wall is pressed against, -1 left, 1 right, 0 none, for spike boots.
+    // only custom walls count, the outer box walls arent wall jumpable
+    private func wallSide() -> CGFloat {
+        guard let player else { return 0 }
+        let mask = Cat.platform
+        // must reach past where the wall clamp parks the model, else it never touches
+        let reach = modelSize / 2 + 8
+        for y in [player.position.y - hitH / 3, player.position.y, player.position.y + hitH / 3] {
+            for dir: CGFloat in [-1, 1] {
+                var hitWall = false
+                physicsWorld.enumerateBodies(alongRayStart: CGPoint(x: player.position.x, y: y),
+                                             end: CGPoint(x: player.position.x + dir * reach, y: y)) { hit, _, _, stop in
+                    if hit.categoryBitMask & mask != 0 { hitWall = true; stop.pointee = true }
+                }
+                if hitWall { return dir }
+            }
+        }
+        return 0
     }
 
     // stops horizontal motion right at the nearest bar face the player is level with,
@@ -1062,6 +1173,15 @@ final class LevelScene: SKScene {
         }
     }
 
+    // a downward jet of particles from the feet while the jetpack thrusts
+    private func jetpackTrail() {
+        guard let player else { return }
+        spawnParticles(at: CGPoint(x: player.position.x, y: player.position.y - modelSize / 2),
+                       count: 2, life: 0.28) { _ in
+            CGVector(dx: .random(in: -10...10), dy: .random(in: -34 ... -18))
+        }
+    }
+
     // bottom bound squash and stretch for jump, keyed so it doesnt pile up
     private func squish(x: CGFloat, y: CGFloat, hold: TimeInterval, back: TimeInterval) {
         guard let squishBottom else { return }
@@ -1103,7 +1223,7 @@ final class LevelScene: SKScene {
         body.friction = 0
         body.linearDamping = 0
         body.categoryBitMask = Cat.player
-        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings | Cat.spike
+        body.contactTestBitMask = Cat.ground | Cat.heart | Cat.wings | Cat.spike | Cat.coin
         body.collisionBitMask = Cat.ground
         body.usesPreciseCollisionDetection = true
         return body
@@ -1111,6 +1231,11 @@ final class LevelScene: SKScene {
 
     func jump() {
         jumpRequestedTime = sceneTime
+    }
+
+    // the jump button reports hold state so the jetpack can thrust while held
+    func setJumpHeld(_ held: Bool) {
+        jumpHeld = held
     }
 
     // cube waits frozen at the top until the scroll settles, then drops
@@ -1163,6 +1288,8 @@ final class LevelScene: SKScene {
         let wallMax = size.width - edgeInset - wallHalf
         let dashing = sceneTime < dashEndTime
         var vx = dashing ? dashDirection * dashSpeed : moveDirection * moveSpeed
+        // hold the wall jump kick briefly so movement input cant cancel it
+        if sceneTime < wallJumpUntil { vx = wallJumpDir * moveSpeed * wallKick }
         let predictedX = player.position.x + vx * dt
         if predictedX > wallMax {
             vx = max(0, (wallMax - player.position.x) / dt)
@@ -1187,9 +1314,10 @@ final class LevelScene: SKScene {
         // a higher gate and longer reach so a slope, where the cube rides slightly off
         // its feet and the vertical speed jitters, still reads as grounded each frame
         if body.velocity.dy <= 80 {
-            let foot = hitW / 2 - 1
-            // includes a center ray so a thin wall directly underneath still grounds
-            for ox in [-foot, 0, foot] {
+            let foot = hitW / 2
+            // rays span the full hitbox width plus the center, so standing right at a
+            // platform edge, where the cube rests overhanging on its corner, still grounds
+            for ox in [-foot, -foot / 2, 0, foot / 2, foot] {
                 let start = CGPoint(x: player.position.x + ox, y: player.position.y)
                 let end = CGPoint(x: start.x, y: start.y - modelSize / 2 - 10)
                 physicsWorld.enumerateBodies(alongRayStart: start, end: end) { hit, _, _, stop in
@@ -1209,9 +1337,41 @@ final class LevelScene: SKScene {
         if grounded {
             lastGroundedTime = sceneTime
             airJumpsUsed = 0
+            jetpackFuel = jetpackMaxFuel   // refuel on the ground
+            jetpackArmed = false           // needs a fresh press each time airborne
             // touched the floor for the first time, everything turns solid
             if entryPhasing { beginEntryPhasing(false) }
         }
+
+        // jetpack, hold jump in the air to accelerate upward, so a fall eases into a
+        // rise instead of flipping instantly, until the small fuel runs out. it only
+        // kicks in once every jump including the double jump is spent, and holds its
+        // fuel until then
+        if hasJetpack, jumpHeld, jetpackArmed, !grounded, !dashing, !entryPhasing, jetpackFuel > 0 {
+            body.velocity.dy = min(body.velocity.dy + jetpackAccel * dt, jetpackMaxRise)
+            jetpackFuel = max(0, jetpackFuel - dt)
+            jetpackTrail()
+        }
+        // report the fuel level to the ui when it moves enough
+        let fuelFrac = jetpackFuel / jetpackMaxFuel
+        if abs(fuelFrac - lastReportedFuel) > 0.015 {
+            lastReportedFuel = fuelFrac
+            onJetpackFuel?(fuelFrac)
+        }
+
+        // spike boots, cling to a wall with a friction that decays over ~1s, then it slides
+        let wall = (hasSpikeBoots && !grounded && !entryPhasing) ? wallSide() : 0
+        if wall != 0 {
+            if wallContact == 0 { wallClingUntil = sceneTime + wallClingTime }   // just caught
+            wallContact = wall
+            if sceneTime < wallClingUntil, body.velocity.dy < 0 {
+                let grip = max(0, CGFloat((wallClingUntil - sceneTime) / wallClingTime))   // 1 -> 0
+                body.velocity.dy *= (1 - 0.7 * grip)
+            }
+        } else {
+            wallContact = 0
+        }
+
         // open mouth in the air, reroll neutral or happy the moment it lands
         if grounded != wasGrounded {
             setMouth(airborne: !grounded)
@@ -1233,7 +1393,16 @@ final class LevelScene: SKScene {
 
         if jumpRequestedTime >= 0, sceneTime - jumpRequestedTime <= jumpBufferTime {
             let groundJump = sceneTime - lastGroundedTime <= coyoteTime
-            if groundJump || airJumpsUsed < extraJumps {
+            // spike boots kick off the wall first, up and away from it
+            if !groundJump, wall != 0, sceneTime < wallClingUntil {
+                body.velocity = CGVector(dx: -wall * moveSpeed * wallKick, dy: jumpSpeed)
+                wallJumpUntil = sceneTime + 0.22; wallJumpDir = -wall
+                lastFacing = -wall; faceShoes(-wall)
+                squish(x: 0.68, y: 1.42, hold: 0.05, back: 0.12)
+                jumpPuff()
+                wallContact = 0; wallClingUntil = -1
+                jumpRequestedTime = -1
+            } else if groundJump || airJumpsUsed < extraJumps {
                 if !groundJump { airJumpsUsed += 1 }
                 body.velocity.dy = 0
                 body.applyImpulse(CGVector(dx: 0, dy: jumpSpeed * body.mass))
@@ -1242,10 +1411,16 @@ final class LevelScene: SKScene {
                 jumpPuff()
                 jumpRequestedTime = -1
                 lastGroundedTime = -1
+            } else if hasJetpack, !grounded {
+                // a press with no jumps left arms the jetpack, hold to thrust
+                jetpackArmed = true
+                jumpRequestedTime = -1
             }
         }
 
-        let jumpState = (first: sceneTime - lastGroundedTime <= coyoteTime,
+        // the first arrow also lights when a spike boots wall jump is available
+        let wallJumpReady = hasSpikeBoots && wall != 0 && sceneTime < wallClingUntil
+        let jumpState = (first: (sceneTime - lastGroundedTime <= coyoteTime) || wallJumpReady,
                          second: extraJumps > 0 && airJumpsUsed < extraJumps)
         if jumpState != lastJumpState {
             lastJumpState = jumpState
@@ -1342,6 +1517,17 @@ extension LevelScene: SKPhysicsContactDelegate {
             }
         case Cat.spike:
             pendingDeath = true
+        case Cat.coin:
+            if let node = other.node {
+                coinsCollected += 1
+                onCollectCoin?(coinsCollected)
+                node.physicsBody = nil
+                node.run(.sequence([
+                    .group([.moveBy(x: 0, y: 26, duration: 0.2), .fadeOut(withDuration: 0.2),
+                            .scale(to: 1.5, duration: 0.2)]),
+                    .removeFromParent()
+                ]))
+            }
         default:
             break
         }

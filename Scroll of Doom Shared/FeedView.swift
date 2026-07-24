@@ -88,6 +88,7 @@ struct FeedView: View {
     @State private var jumpReady = true
     @State private var airJumpReady = false
     @State private var dashReady = true
+    @State private var jetpackFuel: CGFloat = 1
 
     // snappier and subtler, so less time and lighter compositing during the high
     // refresh transition burst
@@ -99,15 +100,6 @@ struct FeedView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // prewarm so first transitions dont hitch
-                Group {
-                    slotScreen
-                    appScreen("settings")
-                    loadingScreen
-                }
-                .opacity(0.01)
-                .allowsHitTesting(false)
-
                 // game warms up hidden behind the menu
                 if let scenes {
                     feed(scenes)
@@ -388,11 +380,11 @@ struct FeedView: View {
         guard let scenes else { return }
         let level = min(max(slot.level, 0), Self.levelCount - 1)
         runPowerups = slot.powerups
-        if slot.powerups.contains(.doubleJump) {
-            for s in scenes { s.extraJumps = 1 }
-        }
-        if slot.powerups.contains(.dash) {
-            for s in scenes { s.hasDash = true }
+        for s in scenes {
+            s.extraJumps = slot.powerups.contains(.doubleJump) ? 1 : 0
+            s.hasDash = slot.powerups.contains(.dash)
+            s.hasJetpack = slot.powerups.contains(.jetpack)
+            s.hasSpikeBoots = slot.powerups.contains(.spikeBoots)
         }
 
         let hasPosition = slot.cubeX != nil && slot.cubeY != nil
@@ -556,15 +548,21 @@ struct FeedView: View {
             scene.onDashStateChanged = { ready in
                 if currentLevel == i { dashReady = ready }
             }
+            scene.onJetpackFuel = { frac in
+                if currentLevel == i { jetpackFuel = frac }
+            }
             // powerups persist for the whole run
             scene.onCollectPowerup = { p in
                 runPowerups.insert(p)
                 switch p {
                 case .doubleJump: for s in built { s.extraJumps = 1 }
                 case .dash: for s in built { s.hasDash = true }
+                case .jetpack: for s in built { s.hasJetpack = true }
+                case .spikeBoots: for s in built { s.hasSpikeBoots = true }
                 }
                 saveProgress()
             }
+            scene.onCollectCoin = { _ in CoinBank.add(1) }
         }
         scenes = built
     }
@@ -600,7 +598,12 @@ struct FeedView: View {
                        },
                        onDash: {
                            scenes[currentLevel].dash()
-                       })
+                       },
+                       onJumpHold: { held in
+                           scenes[currentLevel].setJumpHeld(held)
+                       },
+                       jetpackEnabled: runPowerups.contains(.jetpack),
+                       jetpackFuel: jetpackFuel)
         }
     }
 
@@ -611,12 +614,14 @@ struct FeedView: View {
             let h = geo.size.height
             ZStack(alignment: .top) {
                 ForEach(visiblePages, id: \.self) { index in
+                    // only the level being played renders live, the next one is frozen
+                    // at the top so a paused static frame is identical until you scroll in
                     LevelPageView(levelIndex: index,
                                   displayLevel: Self.displayLevel(for: index),
                                   adPowerup: Self.adLevels[index],
                                   isBoss: Self.bossLevels.contains(index),
                                   scene: scenes[index],
-                                  paused: !showGame)
+                                  paused: !showGame || (index != currentLevel && scrollOffset == 0))
                         .frame(width: geo.size.width, height: h)
                         .offset(y: scrollOffset + CGFloat(index - currentLevel) * h)
                 }
@@ -668,8 +673,8 @@ private struct SettingsView: View {
 
     // frame rate stores the raw hz, mapped to and from the option index
     private var frameIndex: Binding<Int> {
-        Binding(get: { [60, 90, 120].firstIndex(of: settings.framerate) ?? 2 },
-                set: { settings.framerate = [60, 90, 120][$0] })
+        Binding(get: { GameSettings.frameRates.firstIndex(of: settings.framerate) ?? GameSettings.frameRates.count - 1 },
+                set: { settings.framerate = GameSettings.frameRates[$0] })
     }
 
     var body: some View {
@@ -679,7 +684,7 @@ private struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     sectionHeader("Performance", "gauge.with.dots.needle.67percent")
                     VStack(spacing: 2) {
-                        row("Frame Rate", ["60", "90", "120"], frameIndex)
+                        row("Frame Rate", GameSettings.frameRates.map(String.init), frameIndex)
                         row("Graphics", ["Low", "Medium", "High"], $settings.graphics)
                         row("Particles", ["Off", "Low", "Medium", "High"], $settings.particles)
                     }
