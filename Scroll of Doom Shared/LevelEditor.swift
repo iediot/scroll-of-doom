@@ -1026,6 +1026,7 @@ struct LevelPlaytestView: View {
     @State private var jetpackFuel: CGFloat = 1
     @State private var heldDirection: CGFloat = 0
     @State private var equippedSlots: [String?] = [nil, nil]
+    @State private var mergedPairs: Set<String> = []
     @State private var showInventory = false
     @ObservedObject private var settings = GameSettings.shared
 
@@ -1074,22 +1075,28 @@ struct LevelPlaytestView: View {
                                 showInventory = false
                             }
                         }
-                    InventoryPanel(owned: level.powerups, slots: $equippedSlots, free: true)
+                    InventoryPanel(owned: level.powerups, slots: $equippedSlots,
+                                   merged: $mergedPairs, free: true)
                         .padding(.bottom, GameTabBar.height)
                         .transition(.move(edge: .bottom))
                 }
             }
         }
         .onChange(of: equippedSlots) { _ in applyEquip() }
+        // freeze the level while the inventory is open, releasing any held input
+        .onChange(of: showInventory) { open in
+            if open { scene.setMove(0); scene.setJumpHeld(false) }
+            scene.isPaused = open
+        }
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
                        dashEnabled: equippedPowers.contains(.dash), dashReady: dashReady,
                        wingsEnabled: equippedPowers.contains(.doubleJump),
                        jumpReady: jumpReady, airJumpReady: airJumpReady,
-                       onMove: { scene.setMove($0) },
-                       onJump: { scene.jump() },
-                       onDash: { scene.dash() },
-                       onJumpHold: { scene.setJumpHeld($0) },
+                       onMove: { if !showInventory { scene.setMove($0) } },
+                       onJump: { if !showInventory { scene.jump() } },
+                       onDash: { if !showInventory { scene.dash() } },
+                       onJumpHold: { if !showInventory { scene.setJumpHeld($0) } },
                        jetpackEnabled: equippedPowers.contains(.jetpack),
                        jetpackFuel: jetpackFuel,
                        showInventory: $showInventory)

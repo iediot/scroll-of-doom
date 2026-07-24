@@ -108,6 +108,18 @@ enum GameArt {
         }
     }
 
+    // the display icon for an inventory item, the combined pack bakes its wings in
+    static func itemIcon(_ id: String) -> UIImage {
+        guard id == "cube.jetpack.wings" else { return UIImage(named: id) ?? UIImage() }
+        let names = ["cube.wing.jetpack.left", "cube.wing.jetpack.right", "cube.jetpack.wings"]
+        let imgs = names.compactMap { UIImage(named: $0) }
+        guard let size = imgs.first?.size else { return UIImage() }
+        let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            for img in imgs { img.draw(in: CGRect(origin: .zero, size: size)) }
+        }
+    }
+
     private static func mirrored(_ image: UIImage) -> UIImage {
         let fmt = UIGraphicsImageRendererFormat(); fmt.opaque = false; fmt.scale = image.scale
         return UIGraphicsImageRenderer(size: image.size, format: fmt).image { ctx in

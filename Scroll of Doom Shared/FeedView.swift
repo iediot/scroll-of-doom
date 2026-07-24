@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import SpriteKit
 
 struct SaveSlot: Codable {
     var level = 0
@@ -88,6 +89,7 @@ struct FeedView: View {
     @State private var gateUnlocked = false
     @State private var runPowerups: Set<Powerup> = []
     @State private var equippedSlots: [String?] = [nil, nil]
+    @State private var mergedPairs: Set<String> = []
     @State private var showInventory = false
     @State private var jumpReady = true
     @State private var airJumpReady = false
@@ -397,6 +399,7 @@ struct FeedView: View {
         guard let scenes else { return }
         let level = min(max(slot.level, 0), Self.levelCount - 1)
         runPowerups = slot.powerups
+        mergedPairs = Loadout.mergedPairs
         // restore the loadout, only keep items still owned
         var loaded: [String?] = [nil, nil]
         for (i, id) in (slot.equipped ?? []).prefix(2).enumerated()
@@ -455,6 +458,7 @@ struct FeedView: View {
         heldDirection = 0
         runPowerups = []
         equippedSlots = [nil, nil]
+        mergedPairs = []
         showInventory = false
         // reset only after the feed unmounts
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
@@ -604,6 +608,15 @@ struct FeedView: View {
         // the inventory sits under the bar overlay so the bar stays on top of it
         .overlay { inventoryOverlay(scenes) }
         .onChange(of: equippedSlots) { _ in applyEquip(to: scenes) }
+        // freeze the level while the inventory is open, releasing any held input
+        .onChange(of: showInventory) { open in
+            if open {
+                scenes[currentLevel].setMove(0)
+                scenes[currentLevel].setJumpHeld(false)
+                heldDirection = 0
+            }
+            scenes[currentLevel].isPaused = open
+        }
         // outside the scroll so it never moves
         .overlay(alignment: .bottom) {
             GameTabBar(gateUnlocked: gateUnlocked,
@@ -613,16 +626,20 @@ struct FeedView: View {
                        jumpReady: jumpReady,
                        airJumpReady: airJumpReady,
                        onMove: { dir in
+                           guard !showInventory else { return }
                            heldDirection = dir
                            scenes[currentLevel].setMove(dir)
                        },
                        onJump: {
+                           guard !showInventory else { return }
                            scenes[currentLevel].jump()
                        },
                        onDash: {
+                           guard !showInventory else { return }
                            scenes[currentLevel].dash()
                        },
                        onJumpHold: { held in
+                           guard !showInventory else { return }
                            scenes[currentLevel].setJumpHeld(held)
                        },
                        jetpackEnabled: equippedPowers.contains(.jetpack),
@@ -645,7 +662,7 @@ struct FeedView: View {
                             showInventory = false
                         }
                     }
-                InventoryPanel(owned: runPowerups, slots: $equippedSlots)
+                InventoryPanel(owned: runPowerups, slots: $equippedSlots, merged: $mergedPairs)
                     .padding(.bottom, GameTabBar.height)
                     .transition(.move(edge: .bottom))
             }

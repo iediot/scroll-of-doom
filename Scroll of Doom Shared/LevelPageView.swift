@@ -201,9 +201,9 @@ struct GameTabBar: View {
     }
 
     private func barHoldItem(rotation: Angle, direction: CGFloat) -> some View {
-        PressableItem(onPress: { down in onMove(down ? direction : 0) }) {
+        PressableItem(onPress: { down in onMove(down ? direction : 0) }) { pressed in
             RoundedTriangle(cornerRadius: 6)
-                .fill(.white)
+                .fill(pressed ? Self.dimmed : .white)
                 .frame(width: 30, height: 30)
                 .rotationEffect(rotation)
         }
@@ -212,7 +212,7 @@ struct GameTabBar: View {
     // fully grays while locked or recharging, back triangle sits rightmost
     private var dashItem: some View {
         let lit = dashEnabled && dashReady
-        return PressableItem(onPress: { down in if down, dashEnabled { onDash() } }) {
+        return PressableItem(onPress: { down in if down, dashEnabled { onDash() } }) { _ in
             ZStack {
                 RoundedTriangle(cornerRadius: 5)
                     .fill(lit ? Color.white : Self.dimmed)
@@ -234,7 +234,7 @@ struct GameTabBar: View {
 
     // stacked triangles show jump charges, back one is the double jump
     private var jumpItem: some View {
-        PressableItem(onPress: { down in if down { onJump() }; onJumpHold(down) }) {
+        PressableItem(onPress: { down in if down { onJump() }; onJumpHold(down) }) { _ in
             ZStack {
                 // jetpack fuel gauge behind the arrows, the fill drops revealing a
                 // darker track as fuel is spent, like the volume slider
@@ -280,7 +280,7 @@ struct GameTabBar: View {
         } label: {
             Image(systemName: "backpack.fill")
                 .font(.system(size: 27, weight: .medium))
-                .foregroundStyle(showInventory ? .white : Color(white: 0.72))
+                .foregroundStyle(showInventory ? Self.dimmed : .white)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, minHeight: 62)
@@ -391,6 +391,8 @@ struct InventoryPanel: View {
     private static let space = "inventory"
     var owned: Set<Powerup> = []
     @Binding var slots: [String?]
+    // which pairs are merged, lifted to the parent so it survives panel reopens
+    @Binding var merged: Set<String>
     var free: Bool = false      // the editor unlocks and merges without spending
 
     @State private var dragItem: String?
@@ -400,8 +402,9 @@ struct InventoryPanel: View {
     @State private var itemFrames: [String: CGRect] = [:]
     @State private var poolFrame: CGRect = .zero
     @State private var unlocked = 1
-    @State private var merged: Set<String> = []
-    @State private var coins = 0
+    @State private var tick = 0
+    // keeps the balance live while the panel is open, coins can be grabbed under it
+    private let coinTimer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     private var equipped: Set<Powerup> { InventoryItem.powers(of: slots) }
     private var pool: [String] { InventoryItem.owned(from: owned, merged: merged).filter { !slots.contains($0) } }
@@ -419,7 +422,7 @@ struct InventoryPanel: View {
                     Image(uiImage: GameArt.coinStillImage())
                         .resizable().scaledToFit()
                         .frame(width: 22, height: 22)
-                    Text("\(coins)")
+                    Text("\(CoinBank.balance)")
                         .font(.system(size: 18, weight: .bold))
                 }
             }
@@ -452,9 +455,8 @@ struct InventoryPanel: View {
         .coordinateSpace(name: Self.space)
         .onAppear {
             unlocked = free ? slots.count : Loadout.unlockedSlots
-            merged = Loadout.mergedPairs
-            coins = CoinBank.balance
         }
+        .onReceive(coinTimer) { _ in tick += 1 }
         .onPreferenceChange(SlotFrameKey.self) { slotFrames = $0 }
         .onPreferenceChange(PoolFrameKey.self) { poolFrame = $0 }
         .onPreferenceChange(ItemFrameKey.self) { itemFrames = $0 }
@@ -472,7 +474,7 @@ struct InventoryPanel: View {
         // the item follows the finger while dragging
         .overlay {
             if let dragItem {
-                Image(dragItem).resizable().scaledToFit()
+                Image(uiImage: GameArt.itemIcon(dragItem)).resizable().scaledToFit()
                     .frame(width: 54, height: 54)
                     .position(dragPos)
                     .allowsHitTesting(false)
@@ -482,7 +484,7 @@ struct InventoryPanel: View {
 
     // adjacent owned pairs that can still be merged and afforded, id is the pair name
     private var mergeMarks: [(String, String, String)] {
-        guard coins >= mergeCost else { return [] }
+        guard CoinBank.balance >= mergeCost else { return [] }
         var out: [(String, String, String)] = []
         for i in pool.indices where i + 1 < pool.count {
             if let pair = InventoryItem.mergePair(pool[i], pool[i + 1]), !merged.contains(pair) {
@@ -553,12 +555,11 @@ struct InventoryPanel: View {
     }
 
     private func tryMerge(_ pair: String, _ a: String, _ b: String) {
-        guard !merged.contains(pair), coins >= mergeCost else { return }
+        guard !merged.contains(pair), CoinBank.balance >= mergeCost else { return }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             if !free {
                 CoinBank.balance -= mergeCost
                 Loadout.mergedPairs.insert(pair)
-                coins = CoinBank.balance
             }
             merged.insert(pair)
             for i in slots.indices where slots[i] == a || slots[i] == b { slots[i] = nil }
@@ -566,12 +567,11 @@ struct InventoryPanel: View {
     }
 
     private func unlockSlot() {
-        guard unlocked < slots.count, free || coins >= 100 else { return }
+        guard unlocked < slots.count, free || CoinBank.balance >= 100 else { return }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             if !free {
                 CoinBank.balance -= 100
                 Loadout.unlockedSlots = unlocked + 1
-                coins = CoinBank.balance
             }
             unlocked += 1
         }
@@ -592,7 +592,7 @@ struct InventoryPanel: View {
         RoundedRectangle(cornerRadius: 12)
             .fill(Color(white: 0.10))
             .frame(width: 54, height: 54)
-            .overlay(Image(name).resizable().scaledToFit().padding(8))
+            .overlay(Image(uiImage: GameArt.itemIcon(name)).resizable().scaledToFit().padding(8))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.28), lineWidth: 1.5))
     }
 
@@ -604,7 +604,7 @@ struct InventoryPanel: View {
             .frame(width: 62, height: 62)
             .overlay {
                 if let id {
-                    Image(id).resizable().scaledToFit().padding(8)
+                    Image(uiImage: GameArt.itemIcon(id)).resizable().scaledToFit().padding(8)
                         .opacity(dragItem == id ? 0.3 : 1)
                         .highPriorityGesture(dragGesture(id))
                 } else if isUnlocked {
@@ -877,12 +877,12 @@ struct LevelPageView: View {
 // squeezes while held for press feedback
 private struct PressableItem<Content: View>: View {
     let onPress: (Bool) -> Void
-    @ViewBuilder let content: Content
+    @ViewBuilder let content: (Bool) -> Content
 
     @State private var pressed = false
 
     var body: some View {
-        content
+        content(pressed)
             .scaleEffect(pressed ? 0.85 : 1)
             .animation(.easeOut(duration: 0.12), value: pressed)
             .frame(maxWidth: .infinity, minHeight: 62)
