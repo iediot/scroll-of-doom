@@ -37,7 +37,7 @@ struct LevelData: Codable, Identifiable, Equatable {
     var coins: [CoinData] = []        // collectible coins placed in the level
 }
 
-// the players lifetime coin balance, spent later to unlock equip slots
+// the players lifetime coin balance, spent to unlock equip slots and merge items
 enum CoinBank {
     private static let key = "coinBalance"
     static var balance: Int {
@@ -45,6 +45,18 @@ enum CoinBank {
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
     static func add(_ n: Int) { balance += n }
+}
+
+// account wide equip progression, how many slots are unlocked and which item pairs merged
+enum Loadout {
+    static var unlockedSlots: Int {
+        get { max(1, UserDefaults.standard.integer(forKey: "unlockedSlots")) }
+        set { UserDefaults.standard.set(newValue, forKey: "unlockedSlots") }
+    }
+    static var mergedPairs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "mergedPairs") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "mergedPairs") }
+    }
 }
 
 enum CustomLevelStore {
@@ -327,8 +339,9 @@ final class LevelScene: SKScene {
         jetpackSprite.zPosition = -1   // in front of the wings for the combined form
 
         bodySprite = layer("cube.sitting", 0)
-        shoesSprite = layer("cube.shoes", 0.5)   // over the body, at the feet
-        shoesSprite.position.y = -1              // sit them a touch lower
+        shoesSprite = layer("cube.boots.dash", 0.5)   // hidden until boots are equipped
+        shoesSprite.position.y = -1                    // sit them a touch lower
+        shoesSprite.isHidden = true
         eyesSprite = layer("cube.eyes", 1)
         mouthSprite = layer("cube.mouth.neutral", 1)
 
@@ -872,7 +885,10 @@ final class LevelScene: SKScene {
                 drawCentered("cube.wings", w: ww, h: ww * 600 / 700, cy: feet.y - spriteH * 0.62 * scale)
             }
             drawBody(holding ? "cube.holding" : "cube.sitting")
-            if hasDash { drawBody("cube.shoes") }
+            if hasDash || hasSpikeBoots {
+                drawBody((hasDash && hasSpikeBoots) ? "cube.boots.both"
+                         : hasSpikeBoots ? "cube.boots.spike" : "cube.boots.dash")
+            }
             drawBody("cube.eyes")
             drawBody("cube.mouth.neutral")
             if holding {

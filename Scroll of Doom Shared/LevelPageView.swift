@@ -300,19 +300,67 @@ enum InventoryItem {
         default: return []
         }
     }
-    // the owned items for a powerup set, a combined item replaces the two it is made of
-    static func owned(from s: Set<Powerup>) -> [String] {
+    // the owned items, a pair only collapses into its combined item once it has been merged
+    static func owned(from s: Set<Powerup>, merged: Set<String>) -> [String] {
         let wings = s.contains(.doubleJump), jet = s.contains(.jetpack)
         let dash = s.contains(.dash), spike = s.contains(.spikeBoots)
         var out: [String] = []
-        if wings && jet { out.append("cube.jetpack.wings") }
+        if wings && jet && merged.contains("pack") { out.append("cube.jetpack.wings") }
         else { if wings { out.append("cube.wings") }; if jet { out.append("cube.jetpack") } }
-        if dash && spike { out.append("item.bothBoots") }
+        if dash && spike && merged.contains("boots") { out.append("item.bothBoots") }
         else { if dash { out.append("item.dashBoots") }; if spike { out.append("item.spikeBoots") } }
         return out
     }
     static func powers(of slots: [String?]) -> Set<Powerup> {
         slots.compactMap { $0 }.reduce(into: Set<Powerup>()) { $0.formUnion(powers($1)) }
+    }
+    // the merge id for two items that can combine, else nil
+    static func mergePair(_ a: String, _ b: String) -> String? {
+        let pair: Set<String> = [a, b]
+        if pair == ["item.dashBoots", "item.spikeBoots"] { return "boots" }
+        if pair == ["cube.wings", "cube.jetpack"] { return "pack" }
+        return nil
+    }
+    // the single item a merged pair becomes
+    static func mergedItem(_ pair: String) -> String {
+        pair == "boots" ? "item.bothBoots" : "cube.jetpack.wings"
+    }
+}
+
+// the cube built from stacked layers so equipping an item only adds or swaps a layer,
+// the base body never redraws and the frame stays a fixed size so nothing around it shifts
+struct PlayerSpriteView: View {
+    var equipped: Set<Powerup>
+    var height: CGFloat = 120
+
+    var body: some View {
+        let bodyW = height / 1.369
+        let bodyH = bodyW * 600 / 512
+        let wingW = bodyW * 1.5, wingH = wingW * 600 / 700
+        let wingLift = bodyH * 0.62 - wingH / 2        // raise the pack to sit on the back
+        let wings = equipped.contains(.doubleJump)
+        let jet = equipped.contains(.jetpack)
+        let combined = wings && jet
+        let dash = equipped.contains(.dash), spike = equipped.contains(.spikeBoots)
+
+        return ZStack(alignment: .bottom) {
+            if wings {
+                layer(combined ? "cube.wing.jetpack.left" : "cube.wing.left", wingW, wingH).offset(y: -wingLift)
+                layer(combined ? "cube.wing.jetpack.right" : "cube.wing.right", wingW, wingH).offset(y: -wingLift)
+            }
+            if jet { layer(combined ? "cube.jetpack.wings" : "cube.jetpack", wingW, wingH).offset(y: -wingLift) }
+            layer("cube.sitting", bodyW, bodyH)
+            if dash || spike {
+                layer((dash && spike) ? "cube.boots.both" : spike ? "cube.boots.spike" : "cube.boots.dash", bodyW, bodyH)
+            }
+            layer("cube.eyes", bodyW, bodyH)
+            layer("cube.mouth.neutral", bodyW, bodyH)
+        }
+        .frame(width: wingW, height: height, alignment: .bottom)
+    }
+
+    private func layer(_ name: String, _ w: CGFloat, _ h: CGFloat) -> some View {
+        Image(name).resizable().scaledToFit().frame(width: w, height: h)
     }
 }
 
@@ -328,24 +376,36 @@ private struct PoolFrameKey: PreferenceKey {
         let n = nextValue(); if n != .zero { value = n }
     }
 }
+private struct ItemFrameKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, b in b }
+    }
+}
 
-// the pop up inventory, spans the screen and rises from the control bar,
-// items are dragged into the slots to equip them and back out to remove them
+// the pop up inventory, spans the screen and rises from the control bar. items drag
+// into the slots to equip, back out to remove, and onto a partner to merge for coins.
+// locked slots unlock for coins on tap.
 struct InventoryPanel: View {
     static let height: CGFloat = 300
     private static let space = "inventory"
     var owned: Set<Powerup> = []
     @Binding var slots: [String?]
-    var unlockedSlots: Int = 1
+    var free: Bool = false      // the editor unlocks and merges without spending
 
     @State private var dragItem: String?
     @State private var dragPos: CGPoint = .zero
+    @State private var hoverMerge: String?
     @State private var slotFrames: [Int: CGRect] = [:]
+    @State private var itemFrames: [String: CGRect] = [:]
     @State private var poolFrame: CGRect = .zero
+    @State private var unlocked = 1
+    @State private var merged: Set<String> = []
+    @State private var coins = 0
 
     private var equipped: Set<Powerup> { InventoryItem.powers(of: slots) }
-    // owned items not currently sitting in a slot
-    private var pool: [String] { InventoryItem.owned(from: owned).filter { !slots.contains($0) } }
+    private var pool: [String] { InventoryItem.owned(from: owned, merged: merged).filter { !slots.contains($0) } }
+    private var mergeCost: Int { free ? 0 : 200 + 100 * merged.count }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -359,7 +419,7 @@ struct InventoryPanel: View {
                     Image(uiImage: GameArt.coinStillImage())
                         .resizable().scaledToFit()
                         .frame(width: 22, height: 22)
-                    Text("\(CoinBank.balance)")
+                    Text("\(coins)")
                         .font(.system(size: 18, weight: .bold))
                 }
             }
@@ -368,19 +428,13 @@ struct InventoryPanel: View {
             // two square slots hugging a big centered render of the equipped model
             HStack(spacing: 20) {
                 slotView(0)
-                Image(uiImage: GameArt.playerImage(equipped: equipped))
-                    .resizable().scaledToFit()
-                    .frame(height: 120)
+                PlayerSpriteView(equipped: equipped)
                 slotView(1)
             }
 
-            // the pool of owned items, drag one out here to unequip it
+            // the pool of owned items
             HStack(spacing: 12) {
-                ForEach(pool, id: \.self) { id in
-                    itemTile(id)
-                        .opacity(dragItem == id ? 0.3 : 1)
-                        .highPriorityGesture(dragGesture(id))
-                }
+                ForEach(pool, id: \.self) { poolTile($0) }
             }
             .frame(maxWidth: .infinity, minHeight: 62)
             .background(GeometryReader { g in
@@ -396,8 +450,25 @@ struct InventoryPanel: View {
         .background(Color(white: 0.15))
         .clipShape(.rect(topLeadingRadius: 22, topTrailingRadius: 22))
         .coordinateSpace(name: Self.space)
+        .onAppear {
+            unlocked = free ? slots.count : Loadout.unlockedSlots
+            merged = Loadout.mergedPairs
+            coins = CoinBank.balance
+        }
         .onPreferenceChange(SlotFrameKey.self) { slotFrames = $0 }
         .onPreferenceChange(PoolFrameKey.self) { poolFrame = $0 }
+        .onPreferenceChange(ItemFrameKey.self) { itemFrames = $0 }
+        // the mergeable marker sits below and between each pair that can still merge
+        .overlay {
+            ForEach(mergeMarks, id: \.0) { mark in
+                if let fa = itemFrames[mark.1], let fb = itemFrames[mark.2] {
+                    Image("icon.mergeable").resizable().scaledToFit()
+                        .frame(width: 84, height: 42)
+                        .position(x: (fa.midX + fb.midX) / 2, y: fa.maxY + 22)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
         // the item follows the finger while dragging
         .overlay {
             if let dragItem {
@@ -409,19 +480,63 @@ struct InventoryPanel: View {
         }
     }
 
-    private func dragGesture(_ id: String) -> some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
-            .onChanged { v in dragItem = id; dragPos = v.location }
-            .onEnded { v in
-                drop(id, at: v.location)
-                dragItem = nil
+    // adjacent owned pairs that can still be merged and afforded, id is the pair name
+    private var mergeMarks: [(String, String, String)] {
+        guard coins >= mergeCost else { return [] }
+        var out: [(String, String, String)] = []
+        for i in pool.indices where i + 1 < pool.count {
+            if let pair = InventoryItem.mergePair(pool[i], pool[i + 1]), !merged.contains(pair) {
+                out.append((pair, pool[i], pool[i + 1]))
+            }
+        }
+        return out
+    }
+
+    // the price tag shown on a valid merge partner while dragging over it
+    private var mergeBadge: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(.white, lineWidth: 2)
+            .overlay(alignment: .top) {
+                HStack(spacing: 3) {
+                    Image(uiImage: GameArt.coinStillImage()).resizable().scaledToFit()
+                        .frame(width: 13, height: 13)
+                    Text("\(mergeCost)").font(.system(size: 12, weight: .bold))
+                }
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(.black))
+                .foregroundStyle(.white)
+                .offset(y: -12)
             }
     }
 
+    private func dragGesture(_ id: String) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
+            .onChanged { v in
+                dragItem = id
+                dragPos = v.location
+                hoverMerge = mergeTarget(for: id, at: v.location)
+            }
+            .onEnded { v in
+                drop(id, at: v.location)
+                dragItem = nil
+                hoverMerge = nil
+            }
+    }
+
+    // another owned item under the point that this one can still merge with
+    private func mergeTarget(for id: String, at p: CGPoint) -> String? {
+        for (other, f) in itemFrames where other != id && f.contains(p) {
+            if let pair = InventoryItem.mergePair(id, other), !merged.contains(pair) { return other }
+        }
+        return nil
+    }
+
     private func drop(_ id: String, at p: CGPoint) {
-        for i in slots.indices where i < unlockedSlots {
+        for i in slots.indices where i < unlocked {
             if let f = slotFrames[i], f.contains(p) { equip(id, into: i); return }
         }
+        if let other = mergeTarget(for: id, at: p),
+           let pair = InventoryItem.mergePair(id, other) { tryMerge(pair, id, other); return }
         if poolFrame.contains(p) { unequip(id) }
     }
 
@@ -437,6 +552,42 @@ struct InventoryPanel: View {
         }
     }
 
+    private func tryMerge(_ pair: String, _ a: String, _ b: String) {
+        guard !merged.contains(pair), coins >= mergeCost else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if !free {
+                CoinBank.balance -= mergeCost
+                Loadout.mergedPairs.insert(pair)
+                coins = CoinBank.balance
+            }
+            merged.insert(pair)
+            for i in slots.indices where slots[i] == a || slots[i] == b { slots[i] = nil }
+        }
+    }
+
+    private func unlockSlot() {
+        guard unlocked < slots.count, free || coins >= 100 else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if !free {
+                CoinBank.balance -= 100
+                Loadout.unlockedSlots = unlocked + 1
+                coins = CoinBank.balance
+            }
+            unlocked += 1
+        }
+    }
+
+    private func poolTile(_ id: String) -> some View {
+        itemTile(id)
+            .opacity(dragItem == id ? 0.3 : 1)
+            .overlay { if hoverMerge == id { mergeBadge } }
+            .background(GeometryReader { g in
+                Color.clear.preference(key: ItemFrameKey.self,
+                                       value: [id: g.frame(in: .named(Self.space))])
+            })
+            .highPriorityGesture(dragGesture(id))
+    }
+
     private func itemTile(_ name: String) -> some View {
         RoundedRectangle(cornerRadius: 12)
             .fill(Color(white: 0.10))
@@ -446,7 +597,7 @@ struct InventoryPanel: View {
     }
 
     private func slotView(_ i: Int) -> some View {
-        let unlocked = i < unlockedSlots
+        let isUnlocked = i < unlocked
         let id = i < slots.count ? slots[i] : nil
         return RoundedRectangle(cornerRadius: 14)
             .fill(Color(white: 0.10))
@@ -456,17 +607,27 @@ struct InventoryPanel: View {
                     Image(id).resizable().scaledToFit().padding(8)
                         .opacity(dragItem == id ? 0.3 : 1)
                         .highPriorityGesture(dragGesture(id))
-                } else if unlocked {
+                } else if isUnlocked {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(Color(white: 0.35), lineWidth: 2)
                 } else {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(Color(white: 0.2), style: StrokeStyle(lineWidth: 2, dash: [5]))
-                        .overlay(Image(systemName: "lock.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Color(white: 0.32)))
+                        .overlay {
+                            VStack(spacing: 3) {
+                                Image(systemName: "lock.fill").font(.system(size: 16, weight: .semibold))
+                                HStack(spacing: 2) {
+                                    Image(uiImage: GameArt.coinStillImage()).resizable().scaledToFit()
+                                        .frame(width: 12, height: 12)
+                                    Text("100").font(.system(size: 12, weight: .bold))
+                                }
+                            }
+                            .foregroundStyle(Color(white: 0.4))
+                        }
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { if !isUnlocked { unlockSlot() } }
             .background(GeometryReader { g in
                 Color.clear.preference(key: SlotFrameKey.self,
                                        value: [i: g.frame(in: .named(Self.space))])

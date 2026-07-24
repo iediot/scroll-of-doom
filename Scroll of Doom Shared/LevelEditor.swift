@@ -306,8 +306,11 @@ private struct LevelPreview: View {
                     .frame(width: ww, height: wh).offset(y: -mh * 0.12)
             }
             Image("cube.sitting").resizable().scaledToFit().frame(width: mw, height: mh)
-            if level.powerups.contains(.dash) {
-                Image("cube.shoes").resizable().scaledToFit().frame(width: mw, height: mh)
+            if level.powerups.contains(.dash) || level.powerups.contains(.spikeBoots) {
+                let dash = level.powerups.contains(.dash)
+                let spike = level.powerups.contains(.spikeBoots)
+                Image((dash && spike) ? "cube.boots.both" : spike ? "cube.boots.spike" : "cube.boots.dash")
+                    .resizable().scaledToFit().frame(width: mw, height: mh)
             }
             Image("cube.eyes").resizable().scaledToFit().frame(width: mw, height: mh)
             Image("cube.mouth.neutral").resizable().scaledToFit().frame(width: mw, height: mh)
@@ -1071,7 +1074,7 @@ struct LevelPlaytestView: View {
                                 showInventory = false
                             }
                         }
-                    InventoryPanel(owned: level.powerups, slots: $equippedSlots, unlockedSlots: 2)
+                    InventoryPanel(owned: level.powerups, slots: $equippedSlots, free: true)
                         .padding(.bottom, GameTabBar.height)
                         .transition(.move(edge: .bottom))
                 }

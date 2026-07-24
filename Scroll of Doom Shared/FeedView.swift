@@ -645,7 +645,7 @@ struct FeedView: View {
                             showInventory = false
                         }
                     }
-                InventoryPanel(owned: runPowerups, slots: $equippedSlots, unlockedSlots: 1)
+                InventoryPanel(owned: runPowerups, slots: $equippedSlots)
                     .padding(.bottom, GameTabBar.height)
                     .transition(.move(edge: .bottom))
             }
