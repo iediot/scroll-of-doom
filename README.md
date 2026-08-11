@@ -11,7 +11,10 @@ Built solo in Swift with SpriteKit and SwiftUI.
 
 ## Demo
 
-https://github.com/user-attachments/assets/68c7983e-f550-4b21-9c52-e09c962789a7
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/68c7983e-f550-4b21-9c52-e09c962789a7"
+         width="320" height="649" controls muted></video>
+</p>
 
 ## The loop
 
