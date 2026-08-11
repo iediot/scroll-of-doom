@@ -11,13 +11,7 @@ Built solo in Swift with SpriteKit and SwiftUI.
 
 ## Demo
 
-<!--
-Drop the video here: open this file on github.com, click the pencil to edit, then drag the
-video file into the editor. GitHub uploads it and replaces this comment with a player URL.
-Keep it under 100 MB (mp4 or mov).
--->
-
-*(video going here)*
+https://github.com/user-attachments/assets/68c7983e-f550-4b21-9c52-e09c962789a7
 
 ## The loop
 
